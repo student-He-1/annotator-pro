@@ -1,0 +1,420 @@
+# Annotator Pro · 图像标注工具
+
+一款本地优先、隐私安全的桌面级图像标注工具，支持**目标检测**与**图像分类**两种工作模式，内置 **YOLO 预标注**与 **SAM 智能分割**等 AI 辅助能力。基于 Tauri 2 + Svelte 5 构建，可打包为 Windows 原生应用（.exe），也可直接在浏览器中运行。
+
+> 个人学习 / 练手项目，数据全部保存在本地，不上传任何服务器。
+
+---
+
+## 目录
+
+- [功能特性](#功能特性)
+- [技术栈](#技术栈)
+- [项目结构](#项目结构)
+- [环境要求](#环境要求)
+- [快速开始](#快速开始)
+- [开发命令](#开发命令)
+- [打包为桌面应用](#打包为桌面应用)
+- [AI 模型说明（重要）](#ai-模型说明重要)
+- [架构与数据流](#架构与数据流)
+- [标注与导出格式](#标注与导出格式)
+- [Tauri 原生命令清单](#tauri-原生命令清单)
+- [常见问题 FAQ](#常见问题-faq)
+- [已知限制与后续规划](#已知限制与后续规划)
+
+---
+
+## 功能特性
+
+### 两种工作模式（启动时选择，数据互相隔离）
+
+| 模式 | 说明 | 产物 |
+| --- | --- | --- |
+| **目标检测** | 在图片上绘制框 / 多边形 / 关键点 | 每张图一个标注文件 + 可视化图 |
+| **图像分类** | 给整张图片打一个或多个类别标签 | `classification_labels.csv` |
+
+两种模式拥有独立的类别、标注、统计与批量操作，互不串扰；顶栏可随时返回模式选择界面。
+
+### 标注工具（目标检测模式）
+
+| 工具 | 快捷键 | 说明 |
+| --- | --- | --- |
+| 选择 / 移动 | `V` | 选中、拖动、缩放标注，支持把手微调 |
+| 矩形框 | `R` | 标准边界框（Bounding Box） |
+| 多边形 | `P` | 逐点绘制，双击 / 回车闭合 |
+| 旋转框 | `O` | 带角度的旋转矩形（OBB） |
+| 关键点 | `K` | 关键点 / 骨架标注，内置多种骨架模板 |
+| 魔术棒 | `W` | 基于颜色相似度（洪水填充）的半自动区域选取 |
+| SAM 智能分割 | `M` | 点击目标，AI 自动生成高质量分割轮廓 |
+
+画布支持滚轮缩放、双击进入徒手平移（右键退出）、撤销 / 重做、复制、删除、右键菜单。
+
+### AI 辅助
+
+- **YOLO 预标注**：加载 ONNX 格式的 YOLOv8 / YOLOv5 检测模型，一键对当前图或批量图片自动生成检测框，可配置置信度阈值、NMS IoU、输入尺寸，支持自定义 `classes.txt`。
+- **SAM 智能分割**：加载 SAM / MobileSAM 的 Encoder + Decoder 两个 ONNX 模型，点击物体即可生成多边形分割结果，可配置 Mask 阈值、简化精度、多 Mask 候选。
+
+> 模型在**浏览器本地通过 onnxruntime-web（WebAssembly）运行**，无需联网、无需 Python 环境、不发送图片。
+
+### 导入 / 导出
+
+- **导入**：单张 / 多张图片、整个文件夹（桌面端**递归读取子目录**）；支持 jpg/jpeg/png/bmp/webp/gif/svg/ico/tiff/avif。
+- **导出格式**：PASCAL VOC XML、YOLO TXT（含 classes.txt）、COCO JSON（单图 / 合并）、CreateML JSON、LabelMe JSON、**带标注的 PNG / JPG 可视化图片**、图像分类 CSV。
+- 桌面端导出使用 Windows 原生「选择文件夹」对话框，成功后提示完整保存路径。
+
+### 效率工具
+
+- **批量操作**：按图片范围（如第 1–24 张）批量打标签、批量改类别、批量删除；自动识别已打标连续区间。
+- **标注统计**：各类别数量、已标注 / 未标注图片数等。
+- **数据集划分**：按比例随机划分训练 / 验证 / 测试集，可设随机种子。
+- **图片质量筛查**：模糊（清晰度）、过暗 / 过亮、重复图片检测。
+- **标注质量矫检**：过小目标、重叠框等问题检查。
+- **工程保存 / 加载**：导出 `.annotator` 工程文件，包含图片清单、标注、类别与设置。
+- **自动保存**：标注实时写入浏览器本地存储（localStorage），刷新 / 重开不丢失。
+- 深色 / 浅色主题、中英文切换、快捷键自定义。
+
+---
+
+## 技术栈
+
+| 层 | 技术 | 版本 |
+| --- | --- | --- |
+| 前端框架 | Svelte（Runes 响应式） | 5.57 |
+| 语言 | TypeScript | 5.5 |
+| 构建工具 | Vite | 5.4 |
+| 桌面壳 | Tauri | 2.0 |
+| 后端语言 | Rust（edition 2021） | stable |
+| AI 推理 | onnxruntime-web | 1.30 |
+| Tauri 插件 | tauri-plugin-dialog、tauri-plugin-fs | 2.x |
+
+---
+
+## 项目结构
+
+```
+annotator-pro/
+├── index.html                  # 前端入口 HTML
+├── package.json                # 前端依赖与脚本
+├── vite.config.ts              # Vite 配置（端口 1420、onnxruntime 分包、$lib 别名）
+├── svelte.config.js
+├── tsconfig.json
+├── app-icon.png                # 应用图标源文件（用 tauri icon 生成各平台图标）
+│
+├── src/                        # 前端源码
+│   ├── main.ts                 # Svelte 挂载入口
+│   ├── App.svelte              # 主组件：布局、导入导出、Tauri 调用总入口
+│   ├── app.css                 # 全局样式 / 主题变量（深色 & 浅色）
+│   ├── components/             # UI 组件
+│   │   ├── Toolbar.svelte          # 左侧工具栏
+│   │   ├── Sidebar.svelte          # 左侧图片列表
+│   │   ├── Canvas.svelte           # 画布：绘制、交互、平移缩放、右键菜单
+│   │   ├── PropertiesPanel.svelte  # 右侧属性 / 类别 / 导出面板
+│   │   ├── StatusBar.svelte        # 底部状态栏
+│   │   ├── Toast.svelte            # 全局提示
+│   │   ├── Icon.svelte             # 统一 SVG 图标（无 emoji）
+│   │   ├── SettingsModal.svelte    # 设置 / 快捷键 / 主题 / 语言
+│   │   ├── YoloAnnotationModal.svelte  # YOLO 预标注弹窗
+│   │   ├── SamModelModal.svelte    # SAM 模型加载弹窗
+│   │   ├── BatchOperationsModal.svelte # 批量操作
+│   │   ├── StatisticsModal.svelte  # 标注统计
+│   │   ├── DatasetSplitModal.svelte    # 数据集划分
+│   │   ├── ImageQualityModal.svelte    # 图片质量筛查
+│   │   └── QualityCheckModal.svelte    # 标注质量矫检
+│   └── lib/
+│       ├── state.svelte.ts     # ★ 全局响应式状态（图片/标注/类别/UI/快捷键）
+│       ├── types.ts            # 全部 TypeScript 类型定义
+│       ├── i18n.svelte.ts      # 中英文文案
+│       ├── project.svelte.ts   # 工程文件 .annotator 保存/加载、自动保存
+│       ├── yolo.ts             # YOLO ONNX 推理（预处理/NMS/后处理）
+│       ├── sam.ts              # SAM ONNX 推理（encoder/decoder、mask→多边形）
+│       ├── magicwand.ts        # 魔术棒洪水填充算法
+│       ├── imageQuality.ts     # 模糊/亮度/重复（感知哈希）算法
+│       ├── quality.ts          # 标注质量检查算法
+│       ├── dataset.ts          # 数据集划分
+│       ├── skeletons.ts        # 关键点骨架模板
+│       ├── canvas/engine.svelte.ts # Canvas 绘制引擎
+│       ├── export/
+│       │   ├── formats.ts      # VOC/YOLO/COCO/CreateML/LabelMe/分类CSV 生成
+│       │   └── visual-export.ts# PNG/JPG 可视化标注图生成
+│       └── import/labelme.ts   # LabelMe 标注导入
+│
+└── src-tauri/                  # Rust 桌面后端
+    ├── Cargo.toml              # Rust 依赖
+    ├── build.rs
+    ├── tauri.conf.json         # Tauri 配置（窗口、前端 dist 路径）
+    ├── capabilities/default.json # 权限声明（dialog/fs）
+    ├── icons/                  # 各平台图标（Windows/Linux/macOS/Android/iOS）
+    └── src/
+        ├── main.rs             # 程序入口
+        └── lib.rs              # ★ Tauri 命令：文件对话框、读写、递归读图
+```
+
+---
+
+## 环境要求
+
+### 前端
+
+- **Node.js** ≥ 18（推荐 20 LTS），自带 npm
+- 验证：`node -v`、`npm -v`
+
+### 桌面打包（Tauri / Rust）
+
+仅在需要打包 .exe 时安装；纯网页开发不需要。
+
+- **Rust** 稳定版（rustup 安装，本项目使用 1.98+）
+  - Windows 安装：https://rustup.rs
+  - 本项目为节省 C 盘空间，自定义了环境变量：
+    - `CARGO_HOME=E:\.cargo`
+    - `RUSTUP_HOME=E:\.rustup`
+  - 国内可配置 Cargo 清华镜像（`%CARGO_HOME%\config.toml`）：
+    ```toml
+    [source.crates-io]
+    replace-with = 'tuna'
+    [source.tuna]
+    registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+    ```
+- **Visual Studio Build Tools**（C++ 桌面生成工具）
+  - 下载：https://aka.ms/vs/stable/vs_BuildTools.exe
+  - 安装时勾选「使用 C++ 的桌面开发」（Desktop development with C++）
+- **WebView2 Runtime**：Win11 自带；Win10 一般也已预装，缺失时 Tauri 会提示安装。
+
+> 每个**新开的 PowerShell 窗口**若找不到 cargo / node，先刷新 PATH：
+> ```powershell
+> $env:Path = [System.Environment]::GetEnvironmentVariable("Path","User") + ";" + [System.Environment]::GetEnvironmentVariable("Path","Machine")
+> ```
+
+---
+
+## 快速开始
+
+```powershell
+# 1. 进入项目目录
+cd "D:\桌面\图像标注\annotator-pro"
+
+# 2. 安装前端依赖（仅首次）
+npm install
+
+# 3. 启动网页开发服务器（热更新）
+npm run dev
+```
+
+启动后访问 **http://localhost:1420** （端口固定，strictPort）。
+
+> 纯浏览器模式下，文件读写走浏览器 API（HTML input / File System Access / 下载），功能完整但文件对话框是浏览器样式。
+
+### 以桌面开发模式运行（推荐调试原生功能）
+
+```powershell
+npm run tauri dev
+```
+
+该命令会自动启动 Vite 并打开原生 Tauri 窗口，Rust 改动会重新编译，前端改动热更新。
+
+---
+
+## 开发命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `npm run dev` | 仅启动前端开发服务器（http://localhost:1420） |
+| `npm run build` | 构建前端到 `dist/`（打包前必须先执行） |
+| `npm run preview` | 本地预览构建产物 |
+| `npm run tauri dev` | 桌面开发模式（前端 + 原生窗口） |
+| `npm run tauri build` | 打包发布版桌面应用 |
+
+---
+
+## 打包为桌面应用
+
+```powershell
+# 0. 如果应用正在运行，先关闭，否则链接器报 os error 5（拒绝访问）
+Stop-Process -Name "annotator-pro" -Force -ErrorAction SilentlyContinue
+
+# 1. 刷新 PATH（新窗口必做）
+$env:Path = [System.Environment]::GetEnvironmentVariable("Path","User") + ";" + [System.Environment]::GetEnvironmentVariable("Path","Machine")
+
+# 2. 先构建前端
+npm run build
+
+# 3. 打包 Rust + 前端（首次约数分钟，后续增量约 1 分钟）
+npm run tauri build
+```
+
+产物位置：
+
+- **可执行文件**：`src-tauri\target\release\annotator-pro.exe`
+- **安装包**（NSIS / MSI，若启用 bundle）：`src-tauri\target\release\bundle\`
+
+直接双击 `annotator-pro.exe` 即可运行，无需安装。
+
+### 更换应用图标
+
+1. 准备一张 1024×1024 的 PNG，覆盖 `app-icon.png`；
+2. 执行：
+   ```powershell
+   npx tauri icon app-icon.png
+   ```
+   会自动生成 `src-tauri/icons/` 下全部平台所需尺寸；
+3. 重新 `npm run tauri build`。
+
+---
+
+## AI 模型说明（重要）
+
+AI 模型**不随项目打包、不自动下载**，需要用户自行准备 ONNX 文件，在应用内通过弹窗加载（文件仅在本地内存中使用）。
+
+### YOLO 预标注
+
+- 需要 **1 个 ONNX 模型** + 可选的 **类别文件 classes.txt**。
+- 推荐入门模型：**YOLOv8n**（约 12 MB，COCO 80 类，速度快，适合测试）。
+- 获取方式：
+  1. 官方仓库 https://github.com/ultralytics/ultralytics ；
+  2. 用 `ultralytics` 库把 `.pt` 导出为 ONNX：
+     ```python
+     from ultralytics import YOLO
+     YOLO("yolov8n.pt").export(format="onnx")
+     ```
+  3. 或从可信的模型社区（Hugging Face、ModelScope）直接下载他人导出好的 ONNX。
+- 使用：工具栏打开「YOLO 预标注」→ 选择 `.onnx` →（可选）选择 `classes.txt`（每行一个类名）→ 调整阈值 → 对当前图或批量执行。
+- 预期效果：在图片上自动框出模型认识的物体（如 person、car、cat、dog）并打上类别名，可在此基础上人工修正。
+- 测试素材：任意包含常见物体（人、车、猫、狗等）的清晰照片。
+
+### SAM 智能分割
+
+- 需要 **2 个 ONNX 文件**：Encoder（图像编码器）与 Decoder（掩码解码器）。
+- 可选方案：
+  - **MobileSAM**：轻量（约 40 MB 级），速度快，适合普通机器；官方仓库 https://github.com/ChaoningZhang/MobileSAM 主要提供 `.pt`，需自行导出 ONNX。
+  - **SAM ViT-B / ViT-H**：官方 https://github.com/facebookresearch/segment-anything ，精度更高、体积更大、更吃内存。
+- 导出 ONNX 思路（Python）：
+  ```python
+  # 以官方 segment-anything 为例，使用其 scripts/export_onnx_model.py
+  # python -m segment_anything.utils.export_onnx_model \
+  #   --model-type vit_b --checkpoint sam_vit_b_01ec64.pth \
+  #   --output sam_vit_b.onnx ...（按官方脚本参数导出 encoder/decoder）
+  ```
+- 使用：工具栏「SAM 智能分割」→ 分别选择 Encoder、Decoder ONNX → 配置阈值 → 在图上点击目标物体，自动生成多边形轮廓。
+
+> 说明：YOLO 输出的是**矩形检测框**，属于目标检测；SAM 输出的是**像素级分割轮廓（多边形）**，属于图像分割。当前版本 SAM 入口位于目标检测模式下，分割结果以多边形标注呈现。
+
+---
+
+## 架构与数据流
+
+### 双端运行、优雅降级
+
+前端代码同时支持「Tauri 桌面」与「纯浏览器」两种环境。核心策略是**直接尝试调用 Tauri 命令，失败则回退浏览器实现**，不依赖全局环境变量判断：
+
+```ts
+async function tauriInvoke(cmd, args?) {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke(cmd, args);   // 桌面端：走 Rust
+  } catch {
+    return null;                      // 浏览器：返回 null，调用方走 Web 回退
+  }
+}
+```
+
+- 导入图片：先尝试 `pick_directory` / `pick_images`（原生对话框）→ 返回 null 则用 `<input webkitdirectory>` / File System Access。
+- 导出文件：先尝试 `pick_save_directory` + `save_file_base64`（原生写盘并返回路径）→ 失败则用浏览器下载。
+
+### 状态与持久化
+
+- 所有响应式状态集中在 `src/lib/state.svelte.ts`，使用 Svelte 5 Runes（`$state`）。
+- 标注数据结构：`annotations: Record<图片名, Annotation[]>`；分类标签：`imageLabels: Record<图片名, string[]>`。
+- 两种工作模式（`workMode: 'detection' | 'classification'`）数据隔离。
+- 自动保存：标注变更后写入 `localStorage`，重新导入同名图片时自动恢复；也可手动导出 / 导入 `.annotator` 工程文件做长期归档。
+
+### AI 推理链路
+
+```
+ONNX 文件 → FileReader/ArrayBuffer → onnxruntime-web InferenceSession(WASM)
+   → 图像预处理(letterbox/归一化) → run() → 后处理(NMS / mask→轮廓简化)
+   → 生成 Annotation 写入全局状态 → Canvas 渲染
+```
+
+onnxruntime-web 的 wasm 文件较大，已在 `vite.config.ts` 中通过 `manualChunks` 独立分包，避免拖慢首屏。
+
+---
+
+## 标注与导出格式
+
+| 格式 | 扩展名 | 内容 |
+| --- | --- | --- |
+| PASCAL VOC | `.xml` | 矩形框（含尺寸、类别、归一化前像素坐标） |
+| YOLO | `.txt` + `classes.txt` | 每行 `class_id cx cy w h`（归一化） |
+| COCO（单图 / 合并） | `.json` | 标准 COCO images/annotations/categories |
+| CreateML | `.json` | Apple CreateML 风格 |
+| LabelMe | `.json` | LabelMe 兼容，可反向导入 |
+| 可视化图片 | `.png` / `.jpg` | 在原图上绘制框 / 多边形 + 类别名 |
+| 图像分类 | `.csv` | `filename,label`（或多标签） |
+
+标注坐标以图片原始像素为基准；旋转框额外保存中心点与角度，多边形 / 关键点保存点集。
+
+---
+
+## Tauri 原生命令清单
+
+定义于 `src-tauri/src/lib.rs`，Rust 用 snake_case，JS 端 invoke 时用 camelCase 传参：
+
+| 命令 | 参数 | 返回 | 作用 |
+| --- | --- | --- | --- |
+| `pick_directory` | 无 | `string \| null` | 原生选择文件夹（导入用） |
+| `pick_images` | 无 | `string[] \| null` | 原生多选图片 |
+| `pick_save_directory` | 无 | `string \| null` | 原生选择导出目录 |
+| `read_images_from_dir` | `{ dirPath }` | `ImageEntry[]` | **递归**读取目录下全部图片为 base64 |
+| `read_image_file` | `{ filePath }` | `ImageEntry` | 读取单张图片为 base64 |
+| `save_file_base64` | `{ dirPath, filename, contentBase64 }` | 完整路径 | 写文件（文本/图片） |
+| `write_annotation_files` | `{ dirPath, files:[[name,content]] }` | 数量 | 批量写文本标注 |
+| `read_file_as_string` | `{ filePath }` | 文本 | 读取标注 / 类别文本文件 |
+
+`ImageEntry = { name, base64, width, height }`，`base64` 为带 `data:` MIME 前缀的 DataURL。
+支持图片扩展名见 `is_image_extension`：jpg/jpeg/png/bmp/webp/gif/svg/ico/tiff/tif/avif。
+
+权限声明在 `src-tauri/capabilities/default.json`（dialog、fs 读写等）。
+
+---
+
+## 常见问题 FAQ
+
+**1. 打包后文件选择还是浏览器样式（"是否上传文件到此站点"）？**
+说明前端走了浏览器回退分支。确认：① 运行的是 `target\release\annotator-pro.exe` 而非浏览器里的 localhost；② 已重新 `npm run build` 再 `tauri build`（旧 dist 会被打进包）；③ 前端采用「直接 invoke、失败回退」逻辑，原生对话框失败时才会退回浏览器。
+
+**2. 导出只提示"导出成功"，不知道存哪了？**
+桌面端原生导出会提示完整路径；若只有"导出成功"，说明走了浏览器下载分支，文件在浏览器的下载目录中。
+
+**3. 重新打包报 `os error 5`（拒绝访问）？**
+exe 还在运行。先 `Stop-Process -Name "annotator-pro" -Force` 再打包。
+
+**4. 新 PowerShell 窗口提示 cargo / npm 不是命令？**
+刷新 PATH（见「环境要求」），或重开一个终端。
+
+**5. 导入文件夹图片数量和预期不一致？**
+桌面端**递归读取所有子目录**，数量多于"顶层文件数"是正常的；浏览器 `webkitdirectory` 同样递归。请以递归总数为准。
+
+**6. 模型加载报错 / Entry not found？**
+确认是 ONNX 格式（不是 .pt）；YOLO 只需一个检测 ONNX，SAM 需要 encoder + decoder 两个；模型输入尺寸 / 输出格式需与常见 YOLOv8/v5、SAM 导出一致。
+
+**7. 标注刷新后丢失？**
+目标检测与分类各自自动保存到 localStorage，重新导入**同名图片**才会恢复；换浏览器 / 清理缓存会清空，重要数据请用「保存工程」导出 `.annotator`。
+
+**8. C 盘空间紧张？**
+Rust 已可通过 `CARGO_HOME` / `RUSTUP_HOME` 重定向到其他盘；`src-tauri/target` 构建缓存体积大，可在确认无需增量编译后删除，下次构建会重新生成。
+
+---
+
+## 已知限制与后续规划
+
+- [ ] 语义分割、实例分割独立工作模式（当前 SAM 以多边形形式在检测模式下呈现）
+- [ ] 桌面端原生文件 / 文件夹拖拽进画布（早期实现会导致白屏，暂时禁用）
+- [ ] SAM3 等更新一代分割模型的适配
+- [ ] macOS / Linux 打包验证（当前仅在 Windows 验证）
+- [ ] 更多模型格式与内置模型下载引导
+- [ ] 标注进度的工程级持久化（不依赖同名图片恢复）
+
+---
+
+## 许可
+
+本项目仅作个人学习与记录用途，可自由参考、修改。AI 模型与第三方库版权归各自所有者所有，请遵守对应许可协议。

@@ -1,0 +1,243 @@
+/* ============================================================
+   Annotator Pro - Design System
+   ============================================================ */
+
+:root {
+  /* 配色 - 深色主题 */
+  --bg-primary: #0f1419;
+  --bg-secondary: #161c24;
+  --bg-tertiary: #1e2630;
+  --bg-hover: #2a3441;
+  --bg-active: #344050;
+  --border: #2a3441;
+  --border-light: #3a4757;
+  --text-primary: #e8edf3;
+  --text-secondary: #9aa7b8;
+  --text-muted: #6b7a8d;
+  --accent-blue: #4da3ff;
+  --accent-cyan: #36d1c4;
+  --accent-green: #4ade80;
+  --accent-orange: #fbbf24;
+  --accent-red: #f87171;
+  --accent-purple: #a78bfa;
+
+  /* 画布 */
+  --canvas-bg: #0b0f14;
+  --canvas-grid1: #121820;
+  --canvas-grid2: #0f1419;
+
+  /* 字体 */
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-lg: 14px;
+  --text-xl: 16px;
+  --text-2xl: 18px;
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* 间距 */
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-5: 20px;
+  --spacing-6: 24px;
+  --spacing-8: 32px;
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
+  --shadow-glow: 0 0 12px rgba(77,163,255,0.3);
+
+  /* 过渡 */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+  --transition-slow: 300ms ease;
+}
+
+[data-theme="light"] {
+  --bg-primary: #f5f7fa;
+  --bg-secondary: #eef1f5;
+  --bg-tertiary: #e4e8ee;
+  --bg-hover: #dce1e8;
+  --bg-active: #d0d6df;
+  --border: #b8c0cc;
+  --border-light: #a8b2c0;
+  --text-primary: #1a2332;
+  --text-secondary: #3d4f63;
+  --text-muted: #5f6e82;
+  --accent-blue: #2563eb;
+  --accent-cyan: #0891b2;
+  --accent-green: #16a34a;
+  --accent-orange: #d97706;
+  --accent-red: #dc2626;
+  --accent-purple: #7c3aed;
+  --canvas-bg: #e8ecf1;
+  --canvas-grid1: #dde2e8;
+  --canvas-grid2: #d5dae1;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.15);
+  --shadow-glow: 0 0 12px rgba(37,99,235,0.2);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%; overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+input, select, button, textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* ============================================================
+   Scrollbar
+   ============================================================ */
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+  transition: background var(--transition-fast);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+::selection {
+  background: rgba(77,163,255,0.25);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   Buttons (global base)
+   ============================================================ */
+
+button {
+  outline: none;
+  border: none;
+  cursor: pointer;
+  background: none;
+  color: inherit;
+  transition: all var(--transition-fast);
+}
+
+button:focus-visible {
+  box-shadow: 0 0 0 2px rgba(77,163,255,0.5);
+  border-radius: var(--radius-sm);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   Inputs (global base)
+   ============================================================ */
+
+input[type="text"], input[type="number"], select, textarea {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  font-size: var(--text-sm);
+  transition: all var(--transition-fast);
+  outline: none;
+}
+
+input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(77,163,255,0.15);
+}
+
+/* 浅色主题下输入框强制适配（高优先级覆盖组件样式） */
+html[data-theme="light"] .props-panel input[type="text"],
+html[data-theme="light"] .props-panel input[type="number"],
+html[data-theme="light"] .props-panel select,
+html[data-theme="light"] .props-panel textarea,
+html[data-theme="light"] .sidebar input[type="text"],
+html[data-theme="light"] .sidebar select {
+  background: #f5f7fa !important;
+  color: #1a2332 !important;
+  border-color: #b8c0cc !important;
+}
+
+html[data-theme="light"] .props-panel input[type="text"]:focus,
+html[data-theme="light"] .props-panel input[type="number"]:focus,
+html[data-theme="light"] .props-panel select:focus,
+html[data-theme="light"] .props-panel textarea:focus {
+  border-color: #2563eb !important;
+  background: #f5f7fa !important;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+
+/* ============================================================
+   Modal animations
+   ============================================================ */
+
+@keyframes modalFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ============================================================
+   Utility
+   ============================================================ */
+
+.text-muted { color: var(--text-muted); }
+.text-secondary { color: var(--text-secondary); }
+.text-accent { color: var(--accent-blue); }
