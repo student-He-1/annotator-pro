@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { onMount } from 'svelte';
   import { t, initLang, getLang, setLang } from '$lib/i18n.svelte';
   import {
@@ -13,7 +13,7 @@
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
   import { saveProjectAs, loadProjectFromFile } from '$lib/project.svelte';
   import { fitToScreen, render } from '$lib/canvas/engine.svelte';
-  import { clearCache as clearSamCache } from '$lib/sam';
+  import { clearCache as clearSamCache, ensureSidecar } from '$lib/sam';
   import type { ImageInfo, ExportFormat } from '$lib/types';
 
   // Tauri 工具函数：直接尝试调用，失败就返回 null
@@ -83,6 +83,7 @@
   // ============================================================
   // 用 onMount 而非 $effect：loadSavedData 会写入 $state，$effect 中写入会触发自身重跑导致死循环（effect_update_depth_exceeded）
   onMount(async () => {
+    try { await ensureSidecar(); } catch(e) { console.warn('sidecar failed', e); }
     initLang();
     loadSavedData();
     applyTheme();
@@ -413,6 +414,15 @@
       return;
     }
 
+    // U-Net Mask 导出
+    if (ui.exportFormat === 'unet_mask') {
+      const anns = annotations[name] || [];
+      const result = await exportUnetMask(imgData, anns);
+      downloadFile(result.filename, result.dataUrl, 'image/png');
+      showToast(t('exportSuccess'), 'success');
+      return;
+    }
+
     const data = getExportData(name, ui.exportFormat);
     if (!data) { showToast(t('noAnnotations'), 'error'); return; }
     downloadFile(data.filename, data.content, data.mimeType);
@@ -536,8 +546,8 @@
       return;
     }
 
-    // PNG/JPG 可视化图片批量导出
-    if (ui.exportFormat === 'png' || ui.exportFormat === 'jpg') {
+    // PNG/JPG 可视化 / U-Net Mask 批量导出
+    if (ui.exportFormat === 'png' || ui.exportFormat === 'jpg' || ui.exportFormat === 'unet_mask') {
       const annotatedImgs = getImagesWithAnnotations();
       if (annotatedImgs.length === 0) {
         showToast(t('noImagesToExport'), 'error');
@@ -550,7 +560,7 @@
           let count = 0;
           for (const img of annotatedImgs) {
             const anns = annotations[img.name] || [];
-            const result = await exportVisualImageDataUrl(img, anns, { format: ui.exportFormat });
+            const result = ui.exportFormat === 'unet_mask' ? await exportUnetMask(img, anns) : await exportVisualImageDataUrl(img, anns, { format: ui.exportFormat });
             try {
               const fileHandle = await dirHandle.getFileHandle(result.filename, { create: true });
               const writable = await fileHandle.createWritable();
@@ -575,7 +585,7 @@
       let delay = 0;
       for (const img of annotatedImgs) {
         const anns = annotations[img.name] || [];
-        const result = await exportVisualImageDataUrl(img, anns, { format: ui.exportFormat });
+        const result = ui.exportFormat === 'unet_mask' ? await exportUnetMask(img, anns) : await exportVisualImageDataUrl(img, anns, { format: ui.exportFormat });
         setTimeout(() => downloadFile(result.filename, result.dataUrl, mimeType), delay);
         delay += 300;
       }

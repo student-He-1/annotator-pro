@@ -43,6 +43,7 @@ export const ui = $state({
   samMaskThreshold: 0.0,
   samSimplifyTolerance: 1.0,
   samMultiMask: false,
+  samPcsPreview: null as { points: { x: number; y: number }[] } | null,
   theme: 'dark' as 'dark' | 'light',
   toastMessages: [] as { id: number; msg: string; type: 'info' | 'success' | 'error' }[],
   activeClass: 'person',

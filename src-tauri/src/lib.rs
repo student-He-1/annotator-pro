@@ -1,9 +1,11 @@
-﻿use base64::Engine;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{State, Manager};
+
+static CHILD: std::sync::OnceLock<Mutex<Option<std::process::Child>>> = std::sync::OnceLock::new();
 
 /// Sidecar 进程状态
 struct SidecarState {
@@ -241,20 +243,24 @@ async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String
     }
 
     // 找 Python 路径
-    let python_exe = r"D:\79458\Documents\anaconda3\envs\deeplearning\python.exe";
-    let script = r"D:\桌面\图像标注\annotator-pro\src-tauri\sidecar\sam_server.py";
+    // 优先读环境变量 SAM_PYTHON，否则用默认路径
+    let python_exe = std::env::var("SAM_PYTHON").unwrap_or_else(|_| r"D:\79458\Documents\anaconda3\envs\deeplearning\python.exe".to_string());
+    // 脚本路径：exe 同级 sidecar/
+    let exe_dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("no exe dir")?.to_path_buf();
+    let script = exe_dir.join("sidecar").join("sam_server.py");
+    let script = script.to_string_lossy().to_string();
 
     if !std::path::Path::new(python_exe).exists() {
         return Err(format!("Python not found: {}", python_exe));
     }
-    if !std::path::Path::new(script).exists() {
+    if !std::path::Path::new(&script).exists() {
         return Err(format!("Script not found: {}", script));
     }
 
     // 启动进程
     let mut child = std::process::Command::new(python_exe)
         .arg(script)
-        .env("SAM_PORT", "0")
+        .env("SAM_PORT", "1421")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -297,10 +303,14 @@ async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String
 
     let port = port.ok_or("Sidecar did not report port within 30s")?;
 
-    // 保存进程和端口
+    // 同时存全局，供 Exit 时杀（child 先 move 到全局，再存 state）
     {
+        if let Some(g) = CHILD.get() {
+            if let Ok(mut l) = g.lock() { *l = Some(child); }
+        }
         let mut child_lock = state.child.lock().map_err(|e| e.to_string())?;
-        *child_lock = Some(child);
+        // state 里存个占位（Exit 用全局杀）
+        *child_lock = None;
     }
     {
         let mut port_lock = state.port.lock().map_err(|e| e.to_string())?;
@@ -380,6 +390,10 @@ pub fn run() {
             child: Mutex::new(None),
             port: Mutex::new(None),
         })
+        .setup(|_app| {
+            let _ = CHILD.set(Mutex::new(None));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             read_images_from_dir,
             read_image_file,
@@ -393,6 +407,18 @@ pub fn run() {
             sam_sidecar_stop,
             sam_segment,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(g) = CHILD.get() {
+                    if let Ok(mut l) = g.lock() {
+                        if let Some(mut child) = l.take() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                    }
+                }
+            }
+        });
 }

@@ -1,8 +1,8 @@
-﻿/** Canvas 2D 渲染引擎 */
+/** Canvas 2D 渲染引擎 */
 import {
   ui, getCurrentAnnotations, getClassColor,
 } from '../state.svelte';
-import { getSkeleton } from '../skeletons';
+import { getSkeleton, getAllSkeletons } from '../skeletons';
 import type { Annotation, Point, DragHandle, RectAnnotation, RotatedAnnotation } from '../types';
 
 let ctx: CanvasRenderingContext2D;
@@ -172,6 +172,23 @@ export function render() {
     drawPolygonPreview();
   }
 
+  // PCS 文本分割结果 hover 预览（黄色虚线高亮）
+  if (ui.samPcsPreview && ui.samPcsPreview.points.length >= 3) {
+    const pts = ui.samPcsPreview.points;
+    ctx.save();
+    ctx.strokeStyle = '#fbbf24';
+    ctx.fillStyle = 'rgba(251,191,36,0.25)';
+    ctx.lineWidth = 2.5 / ui.zoom;
+    ctx.setLineDash([8 / ui.zoom, 4 / ui.zoom]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x - hw, pts[0].y - hh);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x - hw, pts[i].y - hh);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
   ctx.restore();
 }
 
@@ -273,8 +290,8 @@ function getRotatedCorners(ann: RotatedAnnotation): Point[] {
 function drawKeypoints(ann: Annotation, hw: number, hh: number) {
   if (!('points' in ann)) return;
 
-  // Draw skeleton connections first
-  const skel = getSkeleton(ui.skeletonId);
+  // Draw skeleton connections first — 按本标注的点数匹配骨架模板，避免全局 skeletonId 导致连线错乱
+  const skel = getAllSkeletons().find(t => t.keypoints.length === ann.points.length) || getSkeleton(ui.skeletonId);
   if (skel.skeleton.length > 0) {
     ctx.save();
     ctx.strokeStyle = getClassColor(ann.className);

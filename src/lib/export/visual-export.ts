@@ -1,6 +1,7 @@
 /** 可视化标注图片导出 — 把带标注的图片渲染为 PNG/JPG */
 import type { Annotation, ImageInfo, RectAnnotation, PolygonAnnotation, RotatedAnnotation, KeypointAnnotation } from '../types';
 import { getClassColor } from '../state.svelte';
+import { getAllSkeletons } from '../skeletons';
 
 export interface VisualExportOptions {
   format: 'png' | 'jpg';
@@ -91,6 +92,22 @@ export async function renderAnnotatedImage(
       }
     } else if (ann.type === 'keypoint') {
       const kp = ann as KeypointAnnotation;
+      // 按点数匹配骨架模板（17→COCO人体, 68→人脸, 21→手）
+      const tpl = getAllSkeletons().find(t => t.keypoints.length === kp.points.length);
+      if (tpl && tpl.skeleton.length > 0) {
+        ctx.lineWidth = Math.max(1, lineWidth - 1);
+        ctx.beginPath();
+        for (const [a, b] of tpl.skeleton) {
+          const pa = kp.points[a];
+          const pb = kp.points[b];
+          if (pa && pb) {
+            ctx.moveTo(pa.x, pa.y);
+            ctx.lineTo(pb.x, pb.y);
+          }
+        }
+        ctx.stroke();
+      }
+      // 画点
       for (const pt of kp.points) {
         ctx.beginPath();
         ctx.arc(pt.x, pt.y, lineWidth * 2, 0, Math.PI * 2);

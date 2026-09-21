@@ -1,5 +1,6 @@
-﻿/** 导出格式模块 */
+/** 导出格式模块 */
 import type { Annotation, ImageInfo, ExportFormat } from '../types';
+import { getAllSkeletons } from '../skeletons';
 import { images, annotations, classes, ui } from '../state.svelte';
 
 export function getExportData(
@@ -79,7 +80,14 @@ function exportCOCO(imgData: ImageInfo, anns: Annotation[], baseName: string) {
   const coco = {
     images: [{ id: imageId, file_name: imgData.name, width: imgData.width, height: imgData.height }],
     annotations: [] as any[],
-    categories: classes.map((c, i) => ({ id: i + 1, name: c, supercategory: 'none' })),
+    categories: (() => {
+      const tpl = summarizeKpTemplate();
+      return classes.map((c, i) => {
+        const cat: any = { id: i + 1, name: c, supercategory: 'none' };
+        if (tpl[c]) { cat.keypoints = tpl[c].kp; cat.skeleton = tpl[c].sk.map(e => [e[0]+1, e[1]+1]); }
+        return cat;
+      });
+    })(),
   };
   anns.forEach((ann, i) => {
     const catId = classes.indexOf(ann.className) + 1;
@@ -112,10 +120,14 @@ function exportCOCO(imgData: ImageInfo, anns: Annotation[], baseName: string) {
         ]];
         break;
       }
-      case 'keypoint':
+      case 'keypoint': {
+        const xs = ann.points.map(p => p.x), ys = ann.points.map(p => p.y);
+        ca.bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs)-Math.min(...xs), Math.max(...ys)-Math.min(...ys)];
+        ca.area = ca.bbox[2] * ca.bbox[3];
         ca.keypoints = ann.points.flatMap(p => [p.x, p.y, 2]);
         ca.num_keypoints = ann.points.length;
         break;
+      }
     }
     coco.annotations.push(ca);
   });
@@ -135,7 +147,14 @@ export function getMergedCOCO(): string {
   const coco = {
     images: [] as any[],
     annotations: [] as any[],
-    categories: classes.map((c, i) => ({ id: i + 1, name: c, supercategory: 'none' })),
+    categories: (() => {
+      const tpl = summarizeKpTemplate();
+      return classes.map((c, i) => {
+        const cat: any = { id: i + 1, name: c, supercategory: 'none' };
+        if (tpl[c]) { cat.keypoints = tpl[c].kp; cat.skeleton = tpl[c].sk.map(e => [e[0]+1, e[1]+1]); }
+        return cat;
+      });
+    })(),
   };
   let annId = 1;
   images.forEach((img, imgIdx) => {
@@ -173,10 +192,14 @@ export function getMergedCOCO(): string {
           ]];
           break;
         }
-        case 'keypoint':
+        case 'keypoint': {
+          const xs = ann.points.map(p => p.x), ys = ann.points.map(p => p.y);
+          ca.bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs)-Math.min(...xs), Math.max(...ys)-Math.min(...ys)];
+          ca.area = ca.bbox[2] * ca.bbox[3];
           ca.keypoints = ann.points.flatMap(p => [p.x, p.y, 2]);
           ca.num_keypoints = ann.points.length;
           break;
+        }
       }
       coco.annotations.push(ca);
     });
@@ -292,3 +315,66 @@ export function exportClassificationCSV() {
 }
 
 
+/** 按 class 名汇总 keypoint 模板（取该 class 下出现最多的点数） */
+function summarizeKpTemplate(): Record<string, { num: number; kp: string[]; sk: number[][] }> {
+  const counts: Record<string, Record<number, number>> = {};
+  for (const name of Object.keys(annotations)) {
+    for (const ann of annotations[name]) {
+      if (ann.type !== 'keypoint') continue;
+      const n = ann.points.length;
+      counts[ann.className] = counts[ann.className] || {};
+      counts[ann.className][n] = (counts[ann.className][n] || 0) + 1;
+    }
+  }
+  const out: Record<string, { num: number; kp: string[]; sk: number[][] }> = {};
+  for (const [cls, byNum] of Object.entries(counts)) {
+    let bestNum = 0, bestCnt = 0;
+    for (const [n, cnt] of Object.entries(byNum)) {
+      if (cnt > bestCnt) { bestCnt = cnt; bestNum = +n; }
+    }
+    const tpl = getAllSkeletons().find(t => t.keypoints.length === bestNum);
+    if (tpl) out[cls] = { num: bestNum, kp: tpl.keypoints, sk: tpl.skeleton };
+  }
+  return out;
+}
+
+
+/** U-Net Mask 导出：单通道灰度 PNG，像素值=类别索引（0=背景） */
+export async function exportUnetMask(imgData: ImageInfo, anns: Annotation[]): Promise<{ filename: string; dataUrl: string }> {
+  const canvas = document.createElement('canvas');
+  canvas.width = imgData.width;
+  canvas.height = imgData.height;
+  const ctx = canvas.getContext('2d')!;
+  // 黑底（0=背景）
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (const ann of anns) {
+    const catIdx = classes.indexOf(ann.className) + 1;  // 1-based
+    if (catIdx <= 0) continue;
+    const gray = String(catIdx);
+    ctx.fillStyle = 'rgb(' + gray + ',' + gray + ',' + gray + ')';
+
+
+    if (ann.type === 'rect') {
+      ctx.fillRect(ann.x, ann.y, ann.w, ann.h);
+    } else if (ann.type === 'polygon') {
+      if (ann.points.length < 3) continue;
+      ctx.beginPath();
+      ctx.moveTo(ann.points[0].x, ann.points[0].y);
+      for (let i = 1; i < ann.points.length; i++) ctx.lineTo(ann.points[i].x, ann.points[i].y);
+      ctx.closePath();
+      ctx.fill();
+    } else if (ann.type === 'rotated') {
+      ctx.save();
+      ctx.translate(ann.cx, ann.cy);
+      ctx.rotate((ann.angle * Math.PI) / 180);
+      ctx.fillRect(-ann.w / 2, -ann.h / 2, ann.w, ann.h);
+      ctx.restore();
+    }
+    // keypoint 无区域，跳过
+  }
+
+  const baseName = imgData.name.replace(/\.[^.]+$/, '');
+  return { filename: baseName + '.png', dataUrl: canvas.toDataURL('image/png') };
+}

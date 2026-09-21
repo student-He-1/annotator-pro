@@ -224,4 +224,21 @@
   .progress-bar { height: 100%; background: #238636; transition: width 0.2s; }
   .progress span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; }
   .result-info { margin-top: 10px; padding: 8px 12px; background: var(--bg-primary); border-radius: 4px; font-size: 12px; color: var(--text-secondary); }
+  /* PCS 文本提示 */
+  .form-row input[type="text"] {
+    flex: 1; margin-left: 10px; padding: 4px 8px; background: var(--bg-primary);
+    border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary); font-size: 13px;
+  }
+  .pcs-list { margin-top: 10px; max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .pcs-list-header { padding: 6px 10px; font-size: 12px; color: var(--text-secondary); background: var(--bg-tertiary); border-bottom: 1px solid var(--border); }
+  .pcs-item { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .pcs-item:last-child { border-bottom: none; }
+  .pcs-info { display: flex; gap: 12px; font-size: 12px; }
+  .pcs-score { color: #3fb950; }
+  .pcs-vertices { color: var(--text-secondary); }
+  .pcs-actions { display: flex; gap: 6px; }
+  .btn-accept { padding: 3px 10px; background: #238636; border: 1px solid #2ea043; border-radius: 4px; color: #fff; cursor: pointer; font-size: 12px; }
+  .btn-accept:hover { background: #2ea043; }
+  .btn-discard { padding: 3px 10px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary); cursor: pointer; font-size: 12px; }
+  .btn-discard:hover { background: var(--border); }
 </style>

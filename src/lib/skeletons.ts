@@ -93,13 +93,52 @@ const NONE: SkeletonTemplate = {
   skeleton: [],
 };
 
-export const SKELETON_TEMPLATES: SkeletonTemplate[] = [
+export const BUILTIN_SKELETONS: SkeletonTemplate[] = [
   NONE,
   COCO_BODY,
   HAND_21,
   FACE_68,
 ];
 
+const CUSTOM_KEY = 'custom_skeletons';
+
+export let customSkeletons: SkeletonTemplate[] = loadCustom();
+
+function loadCustom(): SkeletonTemplate[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) return arr;
+    return [];
+  } catch { return []; }
+}
+
+export function saveCustom() {
+  localStorage.setItem(CUSTOM_KEY, JSON.stringify(customSkeletons));
+}
+
+export function getAllSkeletons(): SkeletonTemplate[] {
+  return [...BUILTIN_SKELETONS, ...customSkeletons];
+}
+
 export function getSkeleton(id: string): SkeletonTemplate {
-  return SKELETON_TEMPLATES.find(s => s.id === id) || NONE;
+  return getAllSkeletons().find(s => s.id === id) || NONE;
+}
+
+/** 兼容旧 import */
+export const SKELETON_TEMPLATES: SkeletonTemplate[] = BUILTIN_SKELETONS;
+
+/** 删除自定义模板 */
+export function deleteCustomSkeleton(id: string) {
+  customSkeletons = customSkeletons.filter(s => s.id !== id);
+  saveCustom();
+}
+
+/** 保存/更新自定义模板 */
+export function upsertCustomSkeleton(tpl: SkeletonTemplate) {
+  const idx = customSkeletons.findIndex(s => s.id === tpl.id);
+  if (idx >= 0) customSkeletons[idx] = tpl;
+  else customSkeletons = [...customSkeletons, tpl];
+  saveCustom();
 }

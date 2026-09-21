@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { onMount } from 'svelte';
   import { t } from '$lib/i18n.svelte';
   import {
@@ -10,7 +10,7 @@
     imageModified, annotations, saveAnnotations, clearModified,
   } from '$lib/state.svelte';
   import {
-    initEngine, resize, render, screenToImage, hitTestAnnotation, hitTestHandle,
+    initEngine, resize, render, screenToImage, imageToScreen, hitTestAnnotation, hitTestHandle,
     resizeRectAnnotation, fitToScreen, hitTestPolygonVertex, hitTestPolygonEdge,
   } from '$lib/canvas/engine.svelte';
   import type { Annotation, RectAnnotation, RotatedAnnotation, DragHandle, PolygonAnnotation } from '$lib/types';
@@ -43,6 +43,8 @@
   // ============================================================
   // Load current image
   // ============================================================
+  // 图片加载
+  // 图片加载
   $effect(() => {
     const idx = ui.currentImageIndex;
     if (idx < 0 || idx >= images.length) {
@@ -61,8 +63,7 @@
       ui.isDrawing = false;
       ui.drawingAnnotation = null;
       moveState = null;
-      imageInfoText = `${imgData.width}×${imgData.height} | ${imgData.name}`;
-      // 小图默认 100% 显示，大图才自动适应屏幕
+      imageInfoText = imgData.width + 'x' + imgData.height + ' | ' + imgData.name;
       if (containerEl && img.width <= containerEl.clientWidth && img.height <= containerEl.clientHeight) {
         ui.zoom = 1;
         ui.panX = 0;
@@ -84,6 +85,8 @@
   let mouseStartImg: { x: number; y: number } | null = null;
   // SAM 工具：记录 mousedown 起点，mouseup 判断点击/拖拽
   let samStart: { x: number; y: number; shift: boolean } | null = null;
+  // SAM 拖拽框可视化（屏幕像素坐标）
+  let samDragRect = $state<{ left: number; top: number; w: number; h: number } | null>(null);
 
   function handleMouseDown(e: MouseEvent) {
     // 自由平移模式下忽略 mousedown
@@ -290,6 +293,23 @@
     if (!ui.currentImage) return;
     const imgPos = screenToImage(e.clientX, e.clientY);
 
+    // SAM 工具：拖拽中更新框选可视化
+    if (samStart) {
+      const dx = imgPos.x - samStart.x;
+      const dy = imgPos.y - samStart.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        const s = imageToScreen(samStart.x, samStart.y);
+        const c = imageToScreen(imgPos.x, imgPos.y);
+        samDragRect = {
+          left: Math.min(s.x, c.x),
+          top: Math.min(s.y, c.y),
+          w: Math.abs(c.x - s.x),
+          h: Math.abs(c.y - s.y),
+        };
+      }
+      return;
+    }
+
     if (ui.dragHandle && ui.selectedAnnotation && ui.dragStart) {
       const ann = ui.selectedAnnotation as RectAnnotation;
       const dx = imgPos.x - ui.dragStart.x;
@@ -355,6 +375,7 @@
       const isDrag = Math.abs(dx) > 5 || Math.abs(dy) > 5;
       const start = samStart;
       samStart = null;
+      samDragRect = null;
       runSamSegment(start, imgPos, isDrag);
       return;
     }
@@ -735,6 +756,11 @@
     oncontextmenu={handleContextMenu}>
   </canvas>
 
+  <!-- SAM 拖拽框选可视化 -->
+  {#if samDragRect}
+    <div class="sam-drag-rect" style="left:{samDragRect.left}px;top:{samDragRect.top}px;width:{samDragRect.w}px;height:{samDragRect.h}px"></div>
+  {/if}
+
   <!-- 绘制状态提示 -->
   {#if (ui.currentTool === 'polygon' && ui.polygonPoints.length > 0) || (ui.currentTool === 'keypoint' && ui.isDrawing)}
     <div class="drawing-hint">
@@ -785,6 +811,10 @@
     cursor: grabbing;
   }
   canvas { display: block; position: absolute; top: 0; left: 0; }
+  .sam-drag-rect {
+    position: absolute; border: 1.5px dashed #58a6ff; background: rgba(88,166,255,0.12);
+    pointer-events: none; z-index: 50; border-radius: 2px;
+  }
   .welcome {
     position: absolute; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; color: var(--text-muted); pointer-events: none; z-index: 1;

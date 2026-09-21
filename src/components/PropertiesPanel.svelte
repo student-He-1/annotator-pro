@@ -1,13 +1,16 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t } from '$lib/i18n.svelte';
   import {
     ui, images, classes, classColors, getClassCounts,
     COLORS, getClassColor, getCurrentAnnotations, selectAnnotation, deleteAnnotation,
     pushHistory, showToast, batchDeleteAll, getActiveClass, setActiveClass, annotations, saveAnnotations,
+    getNextAnnotationId, addAnnotation,
   } from '$lib/state.svelte';
   import { render } from '$lib/canvas/engine.svelte';
   import type { ExportFormat, Annotation } from '$lib/types';
   import Icon from './Icon.svelte';
+  import { segmentByText, isModelLoaded, clearCache as clearSamCache, poseDetect, faceDetect, batchPcs, batchKp } from '$lib/sam';
+  import type { PcsInstance } from '$lib/sam';
 
   interface Props {
     onExportCurrent: () => void;
@@ -32,6 +35,7 @@
     { value: 'labelme', label: 'LabelMe JSON' },
     { value: 'png', label: 'PNG 可视化图片' },
     { value: 'jpg', label: 'JPG 可视化图片' },
+    { value: 'unet_mask', label: 'U-Net Mask (PNG)' },
   ];
 
   function toggleImageLabel(className: string) {
@@ -104,6 +108,216 @@
     render();
     showToast(`已清除 ${count} 个标注，可按 Ctrl+Z 撤销`, 'success');
   }
+
+  // ====== PCS 文本提示分割（侧边栏，仅 SAM 工具时显示）======
+  let pcsText = $state('');
+  let pcsThreshold = $state(0.5);
+  let pcsRunning = $state(false);
+  let pcsResults = $state<PcsInstance[]>([]);
+  let pcsElapsed = $state(0);
+
+  async function handlePcsDetect() {
+    if (!ui.currentImage) { showToast('未加载图片', 'error'); return; }
+    if (!isModelLoaded()) { showToast('SAM 模型未加载，请先在弹窗中加载', 'error'); return; }
+    if (!pcsText.trim()) { showToast('请输入要检测的文本', 'error'); return; }
+    try {
+      pcsRunning = true;
+      pcsResults = [];
+      ui.samPcsPreview = null;
+      const t0 = performance.now();
+      const results = await segmentByText(ui.currentImage, pcsText, pcsThreshold);
+      pcsElapsed = performance.now() - t0;
+      pcsResults = results;
+      if (results.length === 0) showToast(`未检测到 "${pcsText}"`, 'error');
+      else showToast(`检测到 ${results.length} 个实例 (${(pcsElapsed/1000).toFixed(2)}s)`, 'success');
+    } catch (e: any) {
+      showToast(`文本分割失败: ${e.message || e}`, 'error');
+    } finally {
+      pcsRunning = false;
+    }
+  }
+
+  function pcsAccept(idx: number) {
+    const inst = pcsResults[idx];
+    if (!inst || inst.polygon.length < 3) return;
+    const ann: Annotation = {
+      type: 'polygon',
+      points: inst.polygon.map(p => ({ x: p.x, y: p.y })),
+      className: getActiveClass(),
+      id: getNextAnnotationId(),
+    };
+    addAnnotation(ann);
+    pushHistory();
+    selectAnnotation(ann);
+    pcsResults = pcsResults.filter((_, i) => i !== idx);
+    ui.samPcsPreview = null;
+    render();
+    showToast(`已接受 (score=${inst.score.toFixed(3)})`, 'success');
+  }
+
+  function pcsDiscard(idx: number) {
+    pcsResults = pcsResults.filter((_, i) => i !== idx);
+    ui.samPcsPreview = null;
+  }
+
+  function pcsAcceptAll() {
+    let count = 0;
+    for (const inst of pcsResults) {
+      if (inst.polygon.length < 3) continue;
+      const ann: Annotation = {
+        type: 'polygon',
+        points: inst.polygon.map(p => ({ x: p.x, y: p.y })),
+        className: getActiveClass(),
+        id: getNextAnnotationId(),
+      };
+      addAnnotation(ann);
+      count++;
+    }
+    pushHistory();
+    pcsResults = [];
+    ui.samPcsPreview = null;
+    render();
+    if (count > 0) showToast(`已全部接受 ${count} 个实例`, 'success');
+  }
+
+  function pcsHover(idx: number | null) {
+    ui.samPcsPreview = idx === null ? null : { points: pcsResults[idx].polygon };
+    render();
+  }
+
+  // ====== 姿态预标注（keypoint 工具时）======
+  let poseRunning = $state(false);
+
+  async function handlePoseDetect() {
+    if (!ui.currentImage) { showToast('未加载图片', 'error'); return; }
+    try {
+      poseRunning = true;
+      const t0 = performance.now();
+      const persons = await poseDetect(ui.currentImage, 0.25);
+      const elapsed = (performance.now() - t0) / 1000;
+      if (persons.length === 0) {
+        const tryFace = window.confirm('未检测到人体。\n是否要改用 68 点人脸检测？');
+        if (tryFace) await handleFaceDetect();
+        return;
+      }
+      // 自动切到 COCO 17 点骨架模板
+      ui.skeletonId = 'coco_body';
+      let count = 0;
+      for (const p of persons) {
+        const ann: Annotation = {
+          type: 'keypoint',
+          points: p.keypoints.map(k => ({ x: k.x, y: k.y })),
+          className: getActiveClass(),
+          id: getNextAnnotationId(),
+        };
+        addAnnotation(ann);
+        count++;
+      }
+      pushHistory();
+      render();
+      showToast(`姿态预标注: ${count} 个人 (${elapsed.toFixed(2)}s)`, 'success');
+    } catch (e: any) {
+      showToast(`姿态检测失败: ${e.message || e}`, 'error');
+    } finally {
+      poseRunning = false;
+    }
+  }
+
+  // 人脸 68 点
+  let faceRunning = $state(false);
+  async function handleFaceDetect() {
+    if (!ui.currentImage) { showToast('未加载图片', 'error'); return; }
+    try {
+      faceRunning = true;
+      const t0 = performance.now();
+      const faces = await faceDetect(ui.currentImage);
+      const elapsed = (performance.now() - t0) / 1000;
+      if (faces.length === 0) {
+        const tryPose = window.confirm('未检测到人脸。\n是否要改用 17 点人体检测？');
+        if (tryPose) await handlePoseDetect();
+        return;
+      }
+      ui.skeletonId = 'face_68';
+      for (const f of faces) {
+        const ann: Annotation = {
+          type: 'keypoint',
+          points: f.keypoints,
+          className: getActiveClass(),
+          id: getNextAnnotationId(),
+        };
+        addAnnotation(ann);
+      }
+      pushHistory();
+      render();
+      showToast(`人脸 68 点: ${faces.length} 张 (${elapsed.toFixed(2)}s)`, 'success');
+    } catch (e: any) {
+      showToast(`人脸检测失败: ${e.message || e}`, 'error');
+    } finally {
+      faceRunning = false;
+    }
+  }
+
+
+  // ====== 批量预标注 ======
+  let batchRunning = $state(false);
+  let batchProgress = $state(0);
+  let batchTotal = $state(0);
+  let batchModel = $state<'pose' | 'face' | 'pcs'>('pose');
+  let batchScope = $state<'empty' | 'all'>('empty');
+  let batchText = $state('');
+
+  async function handleBatch() {
+    if (batchRunning) return;
+    const targets = images.filter(ii => {
+      if (batchScope === 'all') return true;
+      return !(annotations[ii.name] && annotations[ii.name].length > 0);
+    });
+    if (targets.length === 0) { showToast('没有需要处理的图片', 'error'); return; }
+    if (batchModel === 'pcs' && !batchText.trim()) { showToast('请输入文本词', 'error'); return; }
+    if (!confirm('将对 ' + targets.length + ' 张图片执行批量，开始？')) return;
+
+    try {
+      batchRunning = true;
+      batchTotal = targets.length;
+      batchProgress = 0;
+      const dataUrls = targets.map(ii => ii.dataUrl);
+
+      if (batchModel === 'pcs') {
+        const results = await batchPcs(dataUrls, batchText, 0.5);
+        for (let i = 0; i < results.length; i++) {
+          const name = targets[i].name;
+          const insts = results[i].instances;
+          const newAnns = [];
+          for (const inst of insts) {
+            if (inst.polygon.length < 3) continue;
+            newAnns.push({ type: 'polygon', points: inst.polygon, className: getActiveClass(), id: Date.now() + i * 10000 + newAnns.length });
+          }
+          annotations[name] = [...(annotations[name] || []), ...newAnns];
+          batchProgress = i + 1;
+        }
+      } else {
+        const results = await batchKp(dataUrls, batchModel, 0.25);
+        for (let i = 0; i < results.length; i++) {
+          const name = targets[i].name;
+          const objs = results[i].objects;
+          const newAnns = [];
+          for (const o of objs) {
+            newAnns.push({ type: 'keypoint', points: o.keypoints.map(k => ({ x: k.x, y: k.y })), className: getActiveClass(), id: Date.now() + i * 10000 + newAnns.length });
+          }
+          annotations[name] = [...(annotations[name] || []), ...newAnns];
+          batchProgress = i + 1;
+        }
+      }
+      pushHistory();
+      saveAnnotations();
+      render();
+      showToast('批量完成: ' + batchProgress + '/' + batchTotal, 'success');
+    } catch (e: any) {
+      showToast('批量失败: ' + (e.message || e), 'error');
+    } finally {
+      batchRunning = false;
+    }
+  }
 </script>
 
 <div class="props-panel">
@@ -136,6 +350,97 @@
         </div>
       </div>
     {:else}
+    <!-- 智能分割 SAM（仅选 SAM 工具时显示）-->
+    {#if ui.currentTool === 'sam'}
+      <div class="section sam-section">
+        <h4>智能分割 SAM</h4>
+        <p class="muted">点击=正点 · Shift+点击=负点 · 拖拽=框选</p>
+
+        <div class="sub-section">
+          <div class="sub-title">文本提示（PCS）</div>
+          <input type="text" class="pcs-input" placeholder="输入类别，如 cat/狗"
+            bind:value={pcsText}
+            onkeydown={(e) => { if (e.key === 'Enter' && !pcsRunning) handlePcsDetect(); }} />
+          <div class="pcs-threshold-row">
+            <label>阈值</label>
+            <input type="number" step="0.05" min="0.05" max="0.95" bind:value={pcsThreshold} />
+          </div>
+          <button class="btn-sm btn-primary pcs-detect-btn" onclick={handlePcsDetect}
+            disabled={pcsRunning || !pcsText.trim()}>
+            {pcsRunning ? '检测中...' : '检测全部实例'}
+          </button>
+
+          {#if pcsResults.length > 0}
+            <div class="pcs-result-bar">
+              <span class="pcs-count">检测到 {pcsResults.length} 个实例 · {(pcsElapsed/1000).toFixed(2)}s</span>
+              <button class="btn-accept-all" onclick={pcsAcceptAll}>全部接受</button>
+            </div>
+            <div class="pcs-list">
+              {#each pcsResults as inst, idx (idx)}
+                <div class="pcs-item"
+                  onmouseenter={() => pcsHover(idx)}
+                  onmouseleave={() => pcsHover(null)}>
+                  <div class="pcs-item-info">
+                    <span class="pcs-score">#{idx + 1}</span>
+                    <span class="pcs-score">{inst.score.toFixed(3)}</span>
+                    <span class="pcs-verts">{inst.polygon.length}pts</span>
+                  </div>
+                  <div class="pcs-item-actions">
+                    <button class="pcs-accept-btn" onclick={() => pcsAccept(idx)} title="接受为标注">✓</button>
+                    <button class="pcs-discard-btn" onclick={() => pcsDiscard(idx)} title="丢弃">✕</button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      </div>
+    {/if}
+
+    <!-- 姿态预标注（仅 keypoint 工具时显示）-->
+    {#if ui.currentTool === 'keypoint'}
+      <div class="section sam-section">
+        <h4>姿态预标注</h4>
+        <p class="muted">自动检测并生成关键点标注</p>
+        <button class="btn-sm btn-primary pcs-detect-btn" onclick={handlePoseDetect} disabled={poseRunning}>
+          {poseRunning ? '检测中...' : '一键检测人体 (17点)'}
+        </button>
+        <button class="btn-sm btn-primary pcs-detect-btn" onclick={handleFaceDetect} disabled={faceRunning}>
+          {faceRunning ? '检测中...' : '一键检测人脸 (68点)'}
+        </button>
+      </div>
+    {/if}
+
+    <!-- 批量预标注 -->
+    <div class="section sam-section">
+      <h4>批量预标注</h4>
+      <p class="muted">先单图试跑满意后再批量</p>
+      <div class="batch-row">
+        <label>模型</label>
+        <select bind:value={batchModel}>
+          <option value="pose">人体 (17点)</option>
+          <option value="face">人脸 (68点)</option>
+          <option value="pcs">文本分割 (PCS)</option>
+        </select>
+      </div>
+      {#if batchModel === 'pcs'}
+        <input type="text" class="pcs-input" placeholder="输入类别，如 cat/狗" bind:value={batchText}>
+      {/if}
+      <div class="batch-row">
+        <label>范围</label>
+        <select bind:value={batchScope}>
+          <option value="empty">未标注图片</option>
+          <option value="all">全部图片</option>
+        </select>
+      </div>
+      <button class="btn-sm btn-primary pcs-detect-btn" onclick={handleBatch} disabled={batchRunning}>
+        {batchRunning ? '处理中 ' + batchProgress + '/' + batchTotal + '...' : '开始批量'}
+      </button>
+      {#if batchRunning}
+        <div class="batch-progress">{batchProgress} / {batchTotal}</div>
+      {/if}
+    </div>
+
     <!-- Annotation Info -->
     <div class="section">
       <h4>{t('annotationInfo')}</h4>
@@ -184,7 +489,7 @@
         <span class="muted">当前图片无标注</span>
       {:else}
         <div class="ann-list">
-          {#each getCurrentAnnotations() as ann (ann.id)}
+          {#each getCurrentAnnotations() as ann, i (ann.id + '__' + i)}
             <div class="ann-item" class:active={ui.selectedAnnotation?.id === ann.id}
               onclick={() => selectAnnotation(ann)}>
               <span class="ann-type" style="color:{getClassColor(ann.className)}">{getTypeIcon(ann)}</span>
@@ -540,6 +845,87 @@
     color: var(--accent-orange);
     border-color: var(--accent-orange);
   }
+
+  /* ===== SAM PCS 智能分割区块 ===== */
+  .sam-section {
+    padding: 10px;
+    background: linear-gradient(180deg, rgba(88,166,255,0.08), transparent);
+    border: 1px solid rgba(88,166,255,0.25);
+    border-radius: var(--radius-md);
+  }
+  .sam-section h4 {
+    font-size: 11px; margin: 0 0 4px;
+    text-transform: uppercase; letter-spacing: 0.8px;
+    color: #58a6ff; font-weight: var(--weight-semibold);
+  }
+  .sam-section .muted { font-size: 10px; margin-bottom: 10px; }
+  .sub-section { margin-top: 8px; }
+  .sub-title {
+    font-size: 10px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 6px; font-weight: var(--weight-medium);
+  }
+  .pcs-input {
+    width: 100%; padding: 6px 8px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: var(--text-xs);
+    box-sizing: border-box;
+  }
+  .pcs-input:focus { outline: none; border-color: #58a6ff; }
+  .pcs-threshold-row {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 8px; font-size: 11px; color: var(--text-secondary);
+  }
+  .pcs-threshold-row input {
+    width: 60px; padding: 3px 6px;
+    background: var(--bg-primary); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text-primary);
+    font-size: 11px;
+  }
+  .pcs-detect-btn { margin-top: 8px; width: 100%; }
+  .pcs-result-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 10px; padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .pcs-count { font-size: 10px; color: var(--text-secondary); }
+  .btn-accept-all {
+    padding: 3px 10px; font-size: 11px;
+    background: #238636; color: #fff;
+    border: 1px solid #2ea043; border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .btn-accept-all:hover { background: #2ea043; }
+  .pcs-list { margin-top: 6px; max-height: 180px; overflow-y: auto; }
+  .pcs-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 8px; margin-bottom: 2px;
+    border-radius: var(--radius-sm);
+    cursor: pointer; font-size: 11px;
+    transition: background 100ms;
+  }
+  .pcs-item:hover { background: rgba(88,166,255,0.12); }
+  .pcs-item-info { display: flex; gap: 8px; align-items: center; }
+  .pcs-score { color: #3fb950; font-family: var(--font-mono); }
+  .pcs-verts { color: var(--text-muted); font-size: 10px; }
+  .pcs-item-actions { display: flex; gap: 4px; }
+  .pcs-accept-btn, .pcs-discard-btn {
+    width: 22px; height: 22px;
+    border: none; border-radius: var(--radius-sm);
+    cursor: pointer; font-size: 12px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .pcs-accept-btn { background: rgba(46,160,67,0.2); color: #3fb950; }
+  .pcs-accept-btn:hover { background: #2ea043; color: #fff; }
+  .pcs-discard-btn { background: rgba(248,81,73,0.15); color: #f85149; }
+  .pcs-discard-btn:hover { background: #f85149; color: #fff; }
+
+  .batch-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: var(--text-secondary); }
+  .batch-row select { flex: 1; padding: 4px 6px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 11px; }
+  .batch-progress { margin-top: 6px; font-size: 11px; color: var(--accent-blue); font-family: var(--font-mono); }
 </style>
 
 

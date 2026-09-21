@@ -1,4 +1,4 @@
-﻿/** 标注类型 */
+/** 标注类型 */
 export type AnnotationType = 'rect' | 'polygon' | 'rotated' | 'keypoint';
 
 /** 标注工具 */
@@ -69,7 +69,7 @@ export interface ShortcutMap {
 }
 
 /** 导出格式 */
-export type ExportFormat = 'voc' | 'yolo' | 'coco' | 'coco_merged' | 'createml' | 'labelme' | 'png' | 'jpg' | 'classification_csv';
+export type ExportFormat = 'voc' | 'yolo' | 'coco' | 'coco_merged' | 'createml' | 'labelme' | 'png' | 'jpg' | 'classification_csv' | 'unet_mask';
 
 /** 语言 */
 export type Language = 'zh' | 'en';

@@ -1,7 +1,8 @@
 ﻿<script lang="ts">
   import { t, getLang, setLang } from '$lib/i18n.svelte';
   import { ui } from '$lib/state.svelte';
-  import { SKELETON_TEMPLATES } from '$lib/skeletons';
+  import { getAllSkeletons, customSkeletons, deleteCustomSkeleton, upsertCustomSkeleton } from '$lib/skeletons';
+  import type { SkeletonTemplate } from '$lib/skeletons';
   import type { Language, ShortcutMap } from '$lib/types';
 
   interface Props {
@@ -41,6 +42,33 @@
   const entries = $derived(
     Object.entries(ui.shortcuts).filter(([k]) => k !== 'redoAlt')
   );
+
+  // ====== 自定义骨架模板 ======
+  let showEditor = $state(false);
+  let newName = $state('');
+  let newKeypoints = $state('');  // 每行一个名称
+  let newEdges = $state('');     // 每行 "0-1"
+
+  function handleSaveCustom() {
+    const kps = newKeypoints.split(/[\n,，]/).map(s => s.trim()).filter(Boolean);
+    if (!newName.trim() || kps.length < 2) { alert('至少需要名称和 2 个关键点'); return; }
+    const edges: [number, number][] = [];
+    for (const line of newEdges.split(/[\n,，]/).map(s => s.trim()).filter(Boolean)) {
+      const m = line.match(/(\d+)\s*[-:]\s*(\d+)/);
+      if (m) edges.push([+m[1], +m[2]]);
+    }
+    const id = 'custom_' + Date.now();
+    const tpl: SkeletonTemplate = { id, name: newName.trim(), keypoints: kps, skeleton: edges };
+    upsertCustomSkeleton(tpl);
+    newName = ''; newKeypoints = ''; newEdges = '';
+    ui.skeletonId = id;
+  }
+
+  function handleDeleteCustom(id: string) {
+    if (!confirm('删除该自定义模板？')) return;
+    deleteCustomSkeleton(id);
+    if (ui.skeletonId === id) ui.skeletonId = 'none';
+  }
 </script>
 
 <div class="overlay" onclick={onClose}>
@@ -58,11 +86,34 @@
     <div class="section">
       <h4>关键点骨架</h4>
       <select class="skeleton-select" value={ui.skeletonId} onchange={(e) => ui.skeletonId = (e.target as HTMLSelectElement).value}>
-        {#each SKELETON_TEMPLATES as skel}
+        {#each getAllSkeletons() as skel}
           <option value={skel.id}>{skel.name}</option>
         {/each}
       </select>
       <p class="skeleton-hint">选择后关键点标注会自动绘制骨架连线</p>
+
+      <button class="btn-sm btn-custom" onclick={() => showEditor = !showEditor}>
+        {showEditor ? '收起' : '+ 自定义模板'}
+      </button>
+      {#if showEditor}
+        <div class="custom-editor">
+          <input type="text" class="ce-input" placeholder="模板名称，如：动物耳朵" bind:value={newName}>
+          <textarea class="ce-area" placeholder="关键点名称，每行一个&#10;如：&#10;left_ear&#10;right_ear&#10;nose" bind:value={newKeypoints} rows="5"></textarea>
+          <textarea class="ce-area" placeholder="连线（每行一对索引，0-based）&#10;如：&#10;0-1&#10;0-2" bind:value={newEdges} rows="3"></textarea>
+          <button class="btn-sm btn-primary" onclick={handleSaveCustom}>保存模板</button>
+        </div>
+      {/if}
+
+      {#if customSkeletons.length > 0}
+        <div class="custom-list">
+          {#each customSkeletons as tpl (tpl.id)}
+            <div class="custom-item">
+              <span>{tpl.name} <span class="ce-count">({tpl.keypoints.length}点)</span></span>
+              <button class="ce-del" onclick={() => handleDeleteCustom(tpl.id)}>删除</button>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <div class="section">
@@ -130,4 +181,19 @@
   .btn-sm:hover { background: var(--border); color: var(--text-primary); }
   .btn-primary { background: #58a6ff; color: #fff; border-color: #58a6ff; }
   .btn-primary:hover { background: #4090e0; }
+  .btn-custom { margin-top: 8px; }
+  .custom-editor { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .ce-input, .ce-area {
+    width: 100%; padding: 6px 8px; background: var(--bg-primary); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text-primary); font-size: 11px; font-family: 'JetBrains Mono', monospace;
+    box-sizing: border-box;
+  }
+  .ce-area { resize: vertical; }
+  .custom-list { margin-top: 8px; }
+  .custom-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 8px; background: var(--bg-tertiary); border-radius: 4px; margin-bottom: 4px; font-size: 11px;
+  }
+  .ce-count { color: var(--text-muted); }
+  .ce-del { background: none; border: none; color: #f85149; cursor: pointer; font-size: 11px; }
 </style>
