@@ -9,8 +9,6 @@
   }
   let { onClose }: Props = $props();
 
-  let encoderFile = $state<File | null>(null);
-  let decoderFile = $state<File | null>(null);
   let maskThreshold = $state(DEFAULT_SAM_CONFIG.maskThreshold);
   let simplifyTolerance = $state(DEFAULT_SAM_CONFIG.simplifyTolerance);
   let multiMask = $state(DEFAULT_SAM_CONFIG.multiMask);
@@ -20,26 +18,14 @@
 
   const modelLoaded = $derived(isModelLoaded());
 
-  function handleEncoderFile(e: Event) {
-    const input = e.target as HTMLInputElement;
-    if (input.files && input.files.length > 0) encoderFile = input.files[0];
-  }
-  function handleDecoderFile(e: Event) {
-    const input = e.target as HTMLInputElement;
-    if (input.files && input.files.length > 0) decoderFile = input.files[0];
-  }
-
   async function handleLoadModel() {
-    if (!encoderFile || !decoderFile) {
-      showToast('Please select both encoder and decoder ONNX files', 'error');
-      return;
-    }
     try {
       isRunning = true;
-      await loadModel(encoderFile, decoderFile);
-      showToast(`SAM model loaded: ${getModelName()}`, 'success');
+      // 后端自动加载模型，这里只是检查连接
+      await loadModel(null as any, null as any);
+      showToast(`SAM 后端已连接: ${getModelName()}`, 'success');
     } catch (e: any) {
-      showToast(`Failed to load model: ${e.message || e}`, 'error');
+      showToast(`连接失败: ${e.message || e}`, 'error');
     } finally {
       isRunning = false;
     }
@@ -125,21 +111,11 @@
     <div class="modal-body">
       {#if !modelLoaded}
         <div class="section">
-          <h4>1. 加载模型</h4>
-          <p class="hint">需要两个 ONNX 文件：image_encoder.onnx + prompt_encoder_mask_decoder.onnx</p>
-          <p class="hint">推荐 MobileSAM（轻量，约 40MB）或 SAM ViT-B（约 370MB）</p>
-          <div class="file-row">
-            <label>Encoder (.onnx)</label>
-            <input type="file" accept=".onnx" onchange={handleEncoderFile} />
-            {#if encoderFile}<span class="file-name">{encoderFile.name}</span>{/if}
-          </div>
-          <div class="file-row">
-            <label>Decoder (.onnx)</label>
-            <input type="file" accept=".onnx" onchange={handleDecoderFile} />
-            {#if decoderFile}<span class="file-name">{decoderFile.name}</span>{/if}
-          </div>
-          <button class="btn-primary" onclick={handleLoadModel} disabled={isRunning || !encoderFile || !decoderFile}>
-            {isRunning ? '加载中...' : '加载模型'}
+          <h4>1. 连接 GPU 推理后端</h4>
+          <p class="hint">SAM 3 在 Python GPU 后端运行（localhost:1421）</p>
+          <p class="hint">首次启动需要加载模型（约 10 秒）</p>
+          <button class="btn-primary" onclick={handleLoadModel} disabled={isRunning}>
+            {isRunning ? '连接中...' : '连接后端服务'}
           </button>
         </div>
       {:else}

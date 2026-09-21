@@ -55,6 +55,8 @@ export interface ImageInfo {
   dataUrl: string;
   width: number;
   height: number;
+  /// 完整文件路径（sidecar 用，浏览器导入时为空）
+  path?: string;
 }
 
 /** 快捷键配置 */

@@ -1,11 +1,14 @@
 ﻿use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::State;
 
-struct AppState {
-    // Could store persistent state here
+/// Sidecar 进程状态
+struct SidecarState {
+    child: Mutex<Option<std::process::Child>>,
+    port: Mutex<Option<u16>>,
 }
 
 #[derive(Serialize)]
@@ -14,6 +17,33 @@ struct ImageEntry {
     base64: String,
     width: u32,
     height: u32,
+    /// 完整文件路径（sidecar 用）
+    path: Option<String>,
+}
+
+/// 前端调用 SAM segment 的请求
+#[derive(Deserialize, Serialize)]
+struct SamPointReq {
+    x: f64,
+    y: f64,
+    label: u8,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SamBoxReq {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SamSegmentReq {
+    image_path: String,
+    image_b64: Option<String>,
+    points: Option<Vec<SamPointReq>>,
+    #[serde(rename = "box")]
+    box_: Option<SamBoxReq>,
 }
 
 /// Read all images from a directory, return as base64 encoded data
@@ -76,6 +106,7 @@ fn read_images_from_dir(dir_path: String) -> Result<Vec<ImageEntry>, String> {
                         base64: base64_str,
                         width: 0,
                         height: 0,
+                        path: Some(file_path.to_string_lossy().to_string()),
                     });
                 }
             }
@@ -142,6 +173,7 @@ fn read_image_file(file_path: String) -> Result<ImageEntry, String> {
         base64: base64_str,
         width: 0,
         height: 0,
+        path: Some(path.to_string_lossy().to_string()),
     })
 }
 
@@ -197,12 +229,157 @@ fn save_file_base64(dir_path: String, filename: String, content_base64: String) 
     Ok(file_path.to_string_lossy().to_string())
 }
 
+/// Start Python SAM sidecar and return the port
+#[tauri::command]
+async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String> {
+    // 已有进程直接返回
+    {
+        let port = state.port.lock().map_err(|e| e.to_string())?;
+        if let Some(p) = *port {
+            return Ok(p);
+        }
+    }
+
+    // 找 Python 路径
+    let python_exe = r"D:\79458\Documents\anaconda3\envs\deeplearning\python.exe";
+    let script = r"D:\桌面\图像标注\annotator-pro\src-tauri\sidecar\sam_server.py";
+
+    if !std::path::Path::new(python_exe).exists() {
+        return Err(format!("Python not found: {}", python_exe));
+    }
+    if !std::path::Path::new(script).exists() {
+        return Err(format!("Script not found: {}", script));
+    }
+
+    // 启动进程
+    let mut child = std::process::Command::new(python_exe)
+        .arg(script)
+        .env("SAM_PORT", "0")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start sidecar: {}", e))?;
+
+    // 读 stdout 找端口（等 READY 输出）
+    use std::io::{BufRead, BufReader};
+    let mut stdout = child.stdout.take().ok_or("No stdout")?;
+    let mut reader = BufReader::new(&mut stdout);
+
+    // 等待 "listening on http://127.0.0.1:PORT" 或 "READY"
+    let mut port: Option<u16> = None;
+    let mut line = String::new();
+
+    // 超时 30 秒（加载模型需要时间）
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < 30 {
+        line.clear();
+        let n = reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        println!("[sidecar] {}", trimmed);
+
+        // 解析端口
+        if let Some(idx) = trimmed.find("127.0.0.1:") {
+            let rest = &trimmed[idx + "127.0.0.1:".len()..];
+            if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                if let Ok(p) = rest[..end].parse::<u16>() {
+                    port = Some(p);
+                    break;
+                }
+            } else if let Ok(p) = rest.parse::<u16>() {
+                port = Some(p);
+                break;
+            }
+        }
+    }
+
+    let port = port.ok_or("Sidecar did not report port within 30s")?;
+
+    // 保存进程和端口
+    {
+        let mut child_lock = state.child.lock().map_err(|e| e.to_string())?;
+        *child_lock = Some(child);
+    }
+    {
+        let mut port_lock = state.port.lock().map_err(|e| e.to_string())?;
+        *port_lock = Some(port);
+    }
+
+    Ok(port)
+}
+
+/// Stop Python SAM sidecar
+#[tauri::command]
+async fn sam_sidecar_stop(state: State<'_, SidecarState>) -> Result<(), String> {
+    let mut child_lock = state.child.lock().map_err(|e| e.to_string())?;
+    if let Some(mut child) = child_lock.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let mut port_lock = state.port.lock().map_err(|e| e.to_string())?;
+    *port_lock = None;
+    Ok(())
+}
+
+/// Call SAM segment via sidecar HTTP API
+#[tauri::command]
+async fn sam_segment(
+    state: State<'_, SidecarState>,
+    req: SamSegmentReq,
+) -> Result<serde_json::Value, String> {
+    let port = {
+        let port_lock = state.port.lock().map_err(|e| e.to_string())?;
+        port_lock.ok_or("Sidecar not started")?
+    };
+
+    // 如果有 base64，先写到临时文件
+    let mut image_path = req.image_path.clone();
+    if let Some(b64) = req.image_b64 {
+        use base64::Engine;
+        let img_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .map_err(|e| format!("base64 decode error: {}", e))?;
+        let tmp_dir = std::env::temp_dir();
+        let tmp_file = tmp_dir.join(format!("sam_input_{}.jpg", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp_file, &img_bytes)
+            .map_err(|e| format!("write temp file error: {}", e))?;
+        image_path = tmp_file.to_string_lossy().to_string();
+    }
+
+    let url = format!("http://127.0.0.1:{}/segment", port);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "image_path": image_path,
+            "points": req.points,
+            "box": req.box_,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP error: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Sidecar error {}: {}", status, body));
+    }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(json)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .manage(AppState {})
+        .manage(SidecarState {
+            child: Mutex::new(None),
+            port: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
             read_images_from_dir,
             read_image_file,
@@ -212,6 +389,9 @@ pub fn run() {
             pick_images,
             pick_save_directory,
             save_file_base64,
+            sam_sidecar_start,
+            sam_sidecar_stop,
+            sam_segment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

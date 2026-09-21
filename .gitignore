@@ -34,8 +34,12 @@ yarn-error.log*
 *.bak
 _check*.bin
 
+# Python 后端
+python/server.log
+
 # 本地模型 / 数据（体积大，不入库）
 *.onnx
 *.pt
+*.safetensors
 models/
 datasets/

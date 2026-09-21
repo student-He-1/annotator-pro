@@ -12,18 +12,14 @@ export default defineConfig({
   clearScreen: false,
   build: {
     chunkSizeWarningLimit: 30000,
-    rollupOptions: {
-      output: {
-        // onnxruntime-web 独立分包，避免拖慢首屏
-        manualChunks: {
-          'onnxruntime': ['onnxruntime-web'],
-        },
-      },
-    },
   },
   server: {
     port: 1420,
     strictPort: true,
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
     watch: { ignored: ['**/src-tauri/**'] },
   },
 });

@@ -1,6 +1,7 @@
 /** YOLO 本地预标注 — 基于 ONNX Runtime Web，支持 YOLOv5/v8 */
 // 仅类型导入（编译期擦除），运行时通过动态 import 按需加载，避免 28MB 进首屏
 import type * as ort from 'onnxruntime-web';
+import { getOrt } from './ortRuntime';
 
 export interface Detection {
   x: number;
@@ -30,18 +31,6 @@ let classNames: string[] = [];
 let loadedModelName = '';
 // 运行时 ort 模块（动态加载，懒初始化）
 let ortRuntime: typeof ort | null = null;
-let ortPromise: Promise<typeof ort> | null = null;
-
-async function getOrt(): Promise<typeof ort> {
-  if (!ortPromise) {
-    ortPromise = import('onnxruntime-web').then((ort) => {
-      // 配置 WASM 文件路径
-      ort.env.wasm.wasmPaths = '/node_modules/onnxruntime-web/dist/';
-      return ort;
-    });
-  }
-  return ortPromise;
-}
 
 /**
  * 加载 ONNX 模型
