@@ -1,30 +1,53 @@
 # Annotator Pro
 
-一个本地运行的桌面端图像标注工具，基于 **Tauri 2 + Svelte 5** 构建。支持「目标检测 / 图像分类」两种工作模式，内置矩形框、多边形、旋转框、关键点、魔术棒等标注工具，并集成 **YOLO 预标注**与 **SAM 3 智能分割**（Python + CUDA GPU 推理，图片不上传）。
+本地运行的桌面端图像标注工具，基于 **Tauri 2 + Svelte 5** 构建。
 
-> 本项目为**个人学习练手作品**，仅用于记录开发与学习过程，不对外分发、不用于任何商业用途。
->
-> 项目中涉及的 AI 模型（如 YOLO、SAM 3 等）及相关开源组件，均仅在本地作学习演示使用，版权与许可归原开源作者所有；如需正式使用，请遵守各项目原始开源协议。
+> 个人学习练手作品，不对外分发、不用于商业用途。
 
-## 功能
+---
 
-- **双工作模式**：目标检测 / 图像分类，数据互相隔离
-- **标注工具**：矩形框、多边形、旋转框、关键点、魔术棒、SAM 分割
-- **AI 辅助**：YOLO 预标注、SAM 3 智能分割（Python + CUDA GPU 推理）
-- **导出格式**：VOC / YOLO / COCO / CreateML / LabelMe / 可视化 PNG·JPG / 分类 CSV
-- **效率工具**：批量操作、标注统计、数据集划分、图片质量筛查、工程保存与自动保存
-- **桌面原生**：原生文件对话框、文件夹递归读取、本地保存并提示路径
+## 版本更新
 
-## 技术栈
+### v2.0（2026-09-20）— SAM 3 GPU 重构
 
-Tauri 2 · Svelte 5（Runes）· TypeScript · Vite · Rust · Python · FastAPI · PyTorch + CUDA
+**核心升级：SAM 智能分割从浏览器 ONNX 推理 → Python GPU 推理**
+
+| 维度 | v1.0（旧） | v2.0（新） |
+|------|-----------|-----------|
+| **推理方案** | 浏览器 onnxruntime-web（纯 CPU wasm） | Python FastAPI + PyTorch + CUDA GPU |
+| **分割模型** | MobileSAM / SAM ViT-B | SAM 3（Meta 最新） |
+| **图片编码** | ~15 秒 | ~1.3 秒（**11x 提升**） |
+| **点预测** | ~1 秒+ | ~10 毫秒（**100x 提升**） |
+| **分割质量** | fp16 NaN 垃圾值 | 完美（score 0.977） |
+| **推理设备** | 纯 CPU | NVIDIA GPU（CUDA） |
+
+**改动：**
+- 新增 `python/sam_server.py` — FastAPI GPU 推理服务
+- 重写 `src/lib/sam.ts` — 从浏览器 ONNX 改为 fetch 调用 Python 后端
+- 更新 `SamModelModal.svelte` — 从"上传 ONNX 文件"改为"连接后端服务"
+
+**保留不动：**
+- Canvas 画布交互、坐标转换
+- 标注管理、导入导出、YOLO、魔术棒
+
+---
+
+### v1.0（2026-09-18）— 初始版本
+
+- Tauri 2 + Svelte 5 桌面标注工具
+- 支持目标检测 / 图像分类双模式
+- 内置矩形框、多边形、旋转框、关键点、魔术棒标注工具
+- YOLO 预标注（ONNX 本地推理）
+- SAM 智能分割（浏览器 ONNX，纯 CPU）
+- 支持 VOC / YOLO / COCO / CreateML / LabelMe 导出
+
+---
 
 ## 文档
 
-详细的环境搭建、开发命令、打包发布、AI 模型获取与使用说明，请见：
-
+详细的环境搭建、开发命令、架构说明，请见：
 📄 [开发说明日志.md](./开发说明日志.md)
 
 ---
 
-*This is a personal learning project. No commercial use. AI models and open-source components are used for study purposes only; their copyright remains with their respective owners.*
+*This is a personal learning project. No commercial use.*
