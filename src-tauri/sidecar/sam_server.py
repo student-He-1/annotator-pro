@@ -2,11 +2,18 @@
 """
 SAM 3 FastAPI 推理服务
 供 Tauri Sidecar 启动，前端通过 HTTP localhost 调用
+- /embed   图片编码（SAM3）
+- /predict 点选分割（SAM3）
+- /pcs     文本提示分割（SAM3 grounding）
+- /pose    人体 17 点（YOLOv8n-pose）
+- /face    人脸 68 点（face_alignment 2DFAN4）
 """
 import io
 import os
 import uuid
 import time
+import base64
+import threading
 from typing import Optional
 
 import cv2
@@ -25,8 +32,12 @@ MODEL_PATH = os.environ.get(
     "SAM3_MODEL_PATH",
     r"E:\Doubao download\sam3.pt"
 )
+POSE_MODEL_PATH = os.environ.get(
+    "POSE_MODEL_PATH",
+    r"E:\Doubao download\yolov8n-pose.pt"
+)
 HOST = "127.0.0.1"
-PORT = int(os.environ.get('SAM_PORT', '1421'))
+PORT = int(os.environ.get("SAM_PORT", "1421"))
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -44,6 +55,12 @@ model = None
 processor = None
 # inference_state 缓存：image_id -> state
 state_cache: dict[str, object] = {}
+
+# 人体 / 人脸模型（懒加载，避免拖慢启动）
+pose_model = None
+pose_lock = threading.Lock()
+face_model = None
+face_lock = threading.Lock()
 
 
 # ====== 请求/响应模型 ======
@@ -72,6 +89,34 @@ class PredictResponse(BaseModel):
     elapsed_ms: float
 
 
+class PcsRequest(BaseModel):
+    image_id: str
+    text: str
+    confidence_threshold: float = 0.3
+
+
+class PcsResponse(BaseModel):
+    instances: list  # [{polygon, score, box}]
+    elapsed_ms: float
+
+
+class PoseRequest(BaseModel):
+    image_base64: str
+    conf: float = 0.25
+
+
+class PoseResponse(BaseModel):
+    persons: list  # [{keypoints: [[x,y,conf],...], score}]
+
+
+class FaceRequest(BaseModel):
+    image_base64: str
+
+
+class FaceResponse(BaseModel):
+    faces: list  # [{keypoints: [[x,y],...]}]
+
+
 # ====== 启动时加载模型 ======
 @app.on_event("startup")
 def load_model():
@@ -94,8 +139,6 @@ def load_model():
 # ====== 接口：图片编码 ======
 @app.post("/embed", response_model=EmbedResponse)
 def embed(req: EmbedRequest):
-    import base64
-
     if processor is None:
         raise HTTPException(503, "Model not loaded yet")
 
@@ -162,17 +205,146 @@ def predict(req: PredictRequest):
     return PredictResponse(polygon=polygon, score=score_val, elapsed_ms=elapsed)
 
 
+# ====== 接口：文本提示分割（PCS） ======
+@app.post("/pcs", response_model=PcsResponse)
+def pcs(req: PcsRequest):
+    if processor is None:
+        raise HTTPException(503, "Model not loaded yet")
+
+    state = state_cache.get(req.image_id)
+    if state is None:
+        raise HTTPException(404, "Image not found, call /embed first")
+
+    t0 = time.time()
+    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        processor.set_confidence_threshold(req.confidence_threshold, state)
+        st = processor.set_text_prompt(req.text, state)
+    elapsed = (time.time() - t0) * 1000
+
+    masks = st["masks"].cpu().numpy()  # (N,1,H,W) bool
+    boxes = st["boxes"].float().cpu().numpy()  # (N,4) x1y1x2y2
+    scores = st["scores"].float().cpu().numpy()  # (N,)
+
+    instances = []
+    for i in range(len(masks)):
+        mask_uint8 = masks[i][0].astype(np.uint8) * 255
+        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        polygon: list[list[float]] = []
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            epsilon = 0.002 * cv2.arcLength(largest, True)
+            approx = cv2.approxPolyDP(largest, epsilon, True)
+            polygon = approx.reshape(-1, 2).tolist()
+        if len(polygon) >= 3:
+            instances.append({
+                "polygon": polygon,
+                "score": float(scores[i]),
+                "box": [float(v) for v in boxes[i].tolist()],
+            })
+
+    print(f"[SAM Server] pcs: '{req.text}' -> {len(instances)} instances, {elapsed:.0f}ms")
+    return PcsResponse(instances=instances, elapsed_ms=elapsed)
+
+
+# ====== 接口：人体 17 点（YOLOv8n-pose，懒加载） ======
+def _get_pose_model():
+    global pose_model
+    if pose_model is None:
+        with pose_lock:
+            if pose_model is None:
+                from ultralytics import YOLO
+                print(f"[SAM Server] Loading pose model from {POSE_MODEL_PATH} ...")
+                t0 = time.time()
+                pose_model = YOLO(POSE_MODEL_PATH)
+                print(f"[SAM Server] Pose model loaded in {time.time()-t0:.1f}s")
+    return pose_model
+
+
+@app.post("/pose", response_model=PoseResponse)
+def pose(req: PoseRequest):
+    yolo = _get_pose_model()
+
+    img_bytes = base64.b64decode(req.image_base64)
+    img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Invalid image")
+
+    t0 = time.time()
+    results = yolo(img, conf=req.conf, verbose=False)
+    elapsed = (time.time() - t0) * 1000
+
+    persons = []
+    for r in results:
+        if r.keypoints is None:
+            continue
+        kps = r.keypoints.data.cpu().numpy()  # (N,17,3)
+        confs = r.boxes.conf.cpu().numpy() if r.boxes is not None else np.ones(len(kps))
+        for i in range(len(kps)):
+            k = kps[i].tolist()
+            persons.append({
+                "keypoints": [[pt[0], pt[1], pt[2]] for pt in k],
+                "score": float(confs[i]),
+            })
+
+    print(f"[SAM Server] pose: {len(persons)} persons, {elapsed:.0f}ms")
+    return PoseResponse(persons=persons)
+
+
+# ====== 接口：人脸 68 点（face_alignment 2DFAN4，懒加载） ======
+def _get_face_model():
+    global face_model
+    if face_model is None:
+        with face_lock:
+            if face_model is None:
+                import face_alignment
+                print("[SAM Server] Loading face model (2DFAN4) ...")
+                t0 = time.time()
+                face_model = face_alignment.FaceAlignment(
+                    face_alignment.LandmarksType.TWO_D,
+                    device="cuda",
+                    flip_input=False,
+                )
+                print(f"[SAM Server] Face model loaded in {time.time()-t0:.1f}s")
+    return face_model
+
+
+@app.post("/face", response_model=FaceResponse)
+def face(req: FaceRequest):
+    fa = _get_face_model()
+
+    img_bytes = base64.b64decode(req.image_base64)
+    pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    rgb = np.array(pil_img)
+
+    t0 = time.time()
+    preds = fa.get_landmarks(rgb)
+    elapsed = (time.time() - t0) * 1000
+
+    faces = []
+    if preds is not None:
+        for p in preds:
+            pts = p.tolist()
+            if len(pts) < 3:
+                continue
+            faces.append({"keypoints": [[pt[0], pt[1]] for pt in pts]})
+
+    print(f"[SAM Server] face: {len(faces)} faces, {elapsed:.0f}ms")
+    return FaceResponse(faces=faces)
+
+
 # ====== 健康检查 ======
 @app.get("/health")
 def health():
     return {
         "status": "ok",
         "model_loaded": model is not None,
+        "pose_loaded": pose_model is not None,
+        "face_loaded": face_model is not None,
         "cached_images": len(state_cache)
     }
 
 
 if __name__ == "__main__":
     import uvicorn
-    print(f'SAM_SERVER_READY http://{HOST}:{PORT}', flush=True)
+    print(f"SAM_SERVER_READY http://{HOST}:{PORT}", flush=True)
     uvicorn.run(app, host=HOST, port=PORT)

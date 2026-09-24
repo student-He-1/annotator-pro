@@ -12,9 +12,13 @@
 
 ```powershell
 $env:TORCH_HOME="E:\TorchHub"
+$env:TORCHINDUCTOR_CACHE_DIR="E:\TorchHub\inductor_cache"
+$env:TRITON_CACHE_DIR="E:\TorchHub\triton_cache"
 $env:PYTHONIOENCODING="utf-8"
 & "D:\79458\Documents\anaconda3\envs\deeplearning\python.exe" "D:\桌面\图像标注\annotator-pro\src-tauri\target\release\sidecar\sam_server.py"
 ```
+
+> 缓存目录环境变量（TORCHINDUCTOR_CACHE_DIR / TRITON_CACHE_DIR）**必须有**，否则人脸检测会报 triton 缓存错误。
 
 等控制台输出 `SAM_SERVER_READY http://127.0.0.1:1421`（约 10-30 秒，冷启动慢）。**这个窗口不要关。**
 
