@@ -43,3 +43,5 @@ python/server.log
 *.safetensors
 models/
 datasets/
+
+python/.vscode/
