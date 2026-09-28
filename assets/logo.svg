@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 170" width="720" height="170" role="img" aria-labelledby="apLogoTitle">
+  <title id="apLogoTitle">Annotator Pro — 图像标注工具</title>
+
+  <style>
+    /* ---------------------------------------------------------------
+       纯 CSS 动画（无 JavaScript）。GitHub 会剥离 SVG 中的 script 标签，
+       但保留 CSS 动画，因此作为图片嵌入 README 时仍会播放。
+       静态基线为「最终可见状态」：若样式被剥离，仍是一个完整的静态 logo。
+       配色取自应用自身的 src/app.css（--accent-blue / --accent-cyan）。
+       --------------------------------------------------------------- */
+
+    /* 线条自绘：图片外框 */
+    @keyframes drawFrame { from { stroke-dashoffset: 488; } to { stroke-dashoffset: 0; } }
+    /* 线条自绘：标注框 */
+    @keyframes drawBox { from { stroke-dashoffset: 210; } to { stroke-dashoffset: 0; } }
+    /* 线条自绘：关键点骨架 */
+    @keyframes drawBone { from { stroke-dashoffset: 16.5; } to { stroke-dashoffset: 0; } }
+
+    .drawFrame { stroke-dasharray: 488; animation: drawFrame .80s cubic-bezier(.65,0,.35,1) both; }
+    .drawBox   { stroke-dasharray: 210; animation: drawBox   .50s cubic-bezier(.65,0,.35,1) both; }
+    .drawBone  { stroke-dasharray: 16.5; animation: drawBone .40s cubic-bezier(.65,0,.35,1) both; }
+
+    /* 元素弹出 */
+    @keyframes pop {
+      from { opacity: 0; transform: scale(.35); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    .pop {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: pop .45s cubic-bezier(.34,1.56,.64,1) both;
+    }
+
+    /* 标注框角点常驻呼吸：pop 管 opacity，pulse 管 fill-opacity，互不冲突 */
+    @keyframes pulse {
+      0%, 100% { fill-opacity: .5; }
+      50%      { fill-opacity: 1; }
+    }
+    .handle {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: pop .45s cubic-bezier(.34,1.56,.64,1) both,
+                 pulse 2.4s ease-in-out 2.9s infinite;
+    }
+
+    /* 淡入 */
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .fadeIn { animation: fadeIn .55s ease-out both; }
+
+    /* 文字上浮 */
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(9px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .rise { animation: rise .55s cubic-bezier(.22,1,.36,1) both; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .drawFrame, .drawBox, .drawBone, .pop, .handle, .fadeIn, .rise { animation: none !important; }
+    }
+  </style>
+
+  <!-- ============ 左侧：图片框 + 标注 ============ -->
+
+  <!-- 图片内容的写意风景（低对比装饰） -->
+  <g class="fadeIn" style="animation-delay:.55s" fill="#3b82f6" fill-opacity=".11">
+    <circle cx="172" cy="54" r="6.5"/>
+    <path d="M 155 132 L 193 79 L 221 109 L 243 88 L 275 132 Z"/>
+  </g>
+
+  <!-- 图片外框 -->
+  <rect class="drawFrame" x="143" y="31" width="144" height="108" rx="10"
+        fill="#3b82f6" fill-opacity=".05" stroke="#3b82f6" stroke-width="2"
+        style="animation-delay:0s"/>
+
+  <!-- 关键点骨架（人体姿态标注） -->
+  <g stroke="#36d1c4" stroke-width="1.4" stroke-linecap="round" opacity=".9">
+    <line class="drawBone" x1="248" y1="84"  x2="240" y2="96"  style="animation-delay:1.50s"/>
+    <line class="drawBone" x1="248" y1="84"  x2="256" y2="96"  style="animation-delay:1.55s"/>
+    <line class="drawBone" x1="240" y1="96"  x2="248" y2="110" style="animation-delay:1.60s"/>
+    <line class="drawBone" x1="256" y1="96"  x2="248" y2="110" style="animation-delay:1.65s"/>
+  </g>
+
+  <!-- 关键点 -->
+  <g fill="#36d1c4">
+    <circle class="pop" cx="248" cy="84"  r="3"   style="animation-delay:1.75s"/>
+    <circle class="pop" cx="240" cy="96"  r="2.5" style="animation-delay:1.83s"/>
+    <circle class="pop" cx="256" cy="96"  r="2.5" style="animation-delay:1.91s"/>
+    <circle class="pop" cx="248" cy="110" r="2.5" style="animation-delay:1.99s"/>
+  </g>
+
+  <!-- 标注框 -->
+  <rect class="drawBox" x="160" y="60" width="58" height="48" rx="2"
+        fill="none" stroke="#4da3ff" stroke-width="2"
+        style="animation-delay:.90s"/>
+
+  <!-- 标注框四角控制点 -->
+  <g fill="#4da3ff">
+    <rect class="handle" x="157" y="57"  width="6" height="6" rx="1" style="animation-delay:1.10s,2.9s"/>
+    <rect class="handle" x="215" y="57"  width="6" height="6" rx="1" style="animation-delay:1.17s,2.9s"/>
+    <rect class="handle" x="157" y="105" width="6" height="6" rx="1" style="animation-delay:1.24s,2.9s"/>
+    <rect class="handle" x="215" y="105" width="6" height="6" rx="1" style="animation-delay:1.31s,2.9s"/>
+  </g>
+
+  <!-- ============ 右侧：字标 ============ -->
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace"
+     font-size="32" font-weight="700" fill="#3b82f6" text-anchor="start">
+    <text class="rise" x="327"   y="80" style="animation-delay:2.200s">A</text>
+    <text class="rise" x="346.2" y="80" style="animation-delay:2.245s">N</text>
+    <text class="rise" x="365.4" y="80" style="animation-delay:2.290s">N</text>
+    <text class="rise" x="384.6" y="80" style="animation-delay:2.335s">O</text>
+    <text class="rise" x="403.8" y="80" style="animation-delay:2.380s">T</text>
+    <text class="rise" x="423"   y="80" style="animation-delay:2.425s">A</text>
+    <text class="rise" x="442.2" y="80" style="animation-delay:2.470s">T</text>
+    <text class="rise" x="461.4" y="80" style="animation-delay:2.515s">O</text>
+    <text class="rise" x="480.6" y="80" style="animation-delay:2.560s">R</text>
+    <text class="rise" x="519"   y="80" style="animation-delay:2.605s">P</text>
+    <text class="rise" x="538.2" y="80" style="animation-delay:2.650s">R</text>
+    <text class="rise" x="557.4" y="80" style="animation-delay:2.695s">O</text>
+  </g>
+
+  <text class="rise" x="327" y="110"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace"
+        font-size="15" fill="#64748B" textLength="250" lengthAdjust="spacing"
+        style="animation-delay:2.85s">IMAGE ANNOTATION</text>
+</svg>

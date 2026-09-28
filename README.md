@@ -1,8 +1,16 @@
+<div align="center">
+
+<img src="assets/logo.svg" alt="Annotator Pro" width="720">
+
+</div>
+
 # Annotator Pro
 
 本地运行的桌面端图像标注工具，基于 **Tauri 2 + Svelte 5 + Python FastAPI GPU 推理**。
 
-> 个人学习练手作品，不对外分发、不用于商业用途。**v2.3 最终版，不再迭代。**
+> 个人学习练手项目，公开仅作交流参考，**v2.3 最终版，不再迭代**。
+>
+> 保留所有权利；不提供技术支持与维护承诺，使用风险自负。
 
 ---
 
