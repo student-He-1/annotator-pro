@@ -13,7 +13,7 @@
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
   import { saveProjectAs, loadProjectFromFile } from '$lib/project.svelte';
   import { fitToScreen, render } from '$lib/canvas/engine.svelte';
-  import { clearCache as clearSamCache, ensureSidecar } from '$lib/sam';
+  import { clearCache as clearSamCache } from '$lib/sam';
   import type { ImageInfo, ExportFormat } from '$lib/types';
 
   // Tauri 工具函数：直接尝试调用，失败就返回 null
@@ -83,7 +83,6 @@
   // ============================================================
   // 用 onMount 而非 $effect：loadSavedData 会写入 $state，$effect 中写入会触发自身重跑导致死循环（effect_update_depth_exceeded）
   onMount(async () => {
-    try { await ensureSidecar(); } catch(e) { console.warn('sidecar failed', e); }
     initLang();
     loadSavedData();
     applyTheme();
