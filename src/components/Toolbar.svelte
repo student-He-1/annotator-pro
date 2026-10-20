@@ -104,14 +104,12 @@
   <div class="divider"></div>
   <!-- 保存标注：自动保存照旧，这个按钮 = 立刻存 + 给一个明确反馈。
        未保存时按钮变黄，和状态栏的「未保存」是同一份数据。
-       分割模式的掩膜不进 localStorage，这个按钮对它没有意义 → 隐藏。 -->
-  {#if ui.workMode !== 'segmentation'}
+       分割模式也走这里：掩膜由 segmentation/store 注册的钩子一并落盘（三种模式同一套语义）。 -->
   <button class="icon-btn save-annot-btn" class:dirty={isModified()}
     onclick={props.onSaveAnnotations}
     title={`保存标注 (Ctrl+S)${isModified() ? ' · 有未保存改动' : ' · 已是最新'}`}>
     <Icon name="save-check" size={16} />
   </button>
-  {/if}
 
   <div class="divider"></div>
   <button class="icon-btn" onclick={props.onZoomIn} title={t('zoomIn')}>

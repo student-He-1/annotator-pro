@@ -25,12 +25,8 @@
           : 0)
         : getCurrentAnnotations().length
   );
-  // 分割模式：掩膜只随工程文件保存，没有 localStorage 那一层「已保存」语义
-  const modified = $derived(
-    ui.workMode === 'segmentation'
-      ? (ui.maskRev, !!ui.maskDirty[images[ui.currentImageIndex]?.name || ''])
-      : isModified()
-  );
+  // 分割模式也走同一套 imageModified：掩膜改动会 markModified()，和标注一样 500 ms 后落本地缓存
+  const modified = $derived(isModified());
 </script>
 
 <div class="status-bar">

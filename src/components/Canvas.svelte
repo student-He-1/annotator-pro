@@ -398,8 +398,8 @@
     }
     if (mod && key === 's') {
       e.preventDefault();
-      // 掩膜不进 localStorage（5 MB 装不下），Ctrl+S 只存检测/分类标注 → 别说谎
-      showToast('掩膜只随工程文件保存：请用工具栏的「保存工程」', 'info');
+      // 和检测/分类完全一致：Ctrl+S 立刻落盘（掩膜由 store 注册的钩子一起写本地缓存）
+      if (saveAnnotationsNow()) showToast(t('saved'), 'success');
       return;
     }
     if (matchShortcut(e, ui.shortcuts.zoomIn)) { e.preventDefault(); ui.zoom = Math.min(10, ui.zoom * 1.2); clampPan(); render(); return; }

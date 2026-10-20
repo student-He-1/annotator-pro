@@ -6,7 +6,7 @@
  *  分割模式下 `annotations[name]` 恒为空，所以检测/分类的渲染、导出、统计、
  *  撤销逻辑天然碰不到掩膜数据。
  */
-import { ui, images, showToast } from '../state.svelte';
+import { ui, images, showToast, markModified, saveAnnotations, registerMaskPersistence } from '../state.svelte';
 import { normalizePrompt } from '../sam';
 import { DEFAULT_SEG_COLORS, SEG_ZH_TO_EN, colorForNewSegClass, inferKind } from './presets';
 import {
@@ -18,6 +18,16 @@ import type { ImageMask, MaskCandidate, MaskRegion, MaskRegionKind, ProjectMask,
 
 const MAX_MASK_HISTORY = 30;
 const MAX_DECODED = 2;
+
+/** 掩膜的本地缓存（和检测/分类的标注共用一套保存键与自动保存语义）。
+ *
+ *  localStorage 的额度约 5 MB（按字符算），标注数据还要共用同一份额度，
+ *  所以这里给掩膜留 2.5 MB 预算：超了**不写**、状态栏保持「未保存」并明确提示改用「保存工程」。
+ *  宁可显示未保存，也不要谎报已保存（这是第 9 批定下的语义）。 */
+const MASK_STORAGE_KEY = 'annotator_masks';
+const MASK_LS_BUDGET = 2.5 * 1024 * 1024;
+/** 有掩膜改动还没写进本地缓存（也覆盖「删图把掩膜删掉」这种非区域级改动） */
+let storageDirty = false;
 
 /** 真值：图片 name → 掩膜（紧凑形态） */
 const maskMap = new Map<string, ImageMask>();
@@ -99,9 +109,21 @@ function storeMask(name: string, mask: ImageMask, map: Uint8Array | null) {
   maskMap.set(name, { ...mask, counts: enc.counts, ids: enc.ids });
   if (map) cacheDecoded(name, map);
   else decodeCache.delete(name);
-  if (map) ui.maskDirty[name] = true;
+  markMaskDirty(name);
   refreshMeta();
   bump();
+}
+
+/** 标记「这张图的掩膜有改动」。
+ *
+ *  刻意**复用**检测/分类那套保存链路（`markModified` → `imageModified` → 500 ms 防抖 → `saveAnnotationsNow`），
+ *  于是：工具栏「保存标注」按钮、Ctrl+S、状态栏「已保存/未保存」三种模式行为完全一致，
+ *  不再出现「分割模式永远显示未保存、按保存键还没反应」。
+ *  掩膜的真正落盘在 `persistMasksToStorage`（由 state 在保存时回调）。 */
+function markMaskDirty(name: string) {
+  storageDirty = true;
+  if (name) ui.maskDirty[name] = true;
+  markModified();
 }
 
 function refreshMeta() {
@@ -534,6 +556,7 @@ export function setRegionClass(ordinal: number, className: string) {
       ? { ...r, className: cls, kind: inferKind(cls, (r.area || 0) / (total || 1)) }
       : r),
   });
+  markMaskDirty(name);
   refreshMeta();
   bump();
 }
@@ -549,6 +572,7 @@ export function toggleRegionHidden(ordinal: number) {
     ...mask,
     regions: mask.regions.map(r => r.ordinal === ordinal ? { ...r, hidden: !r.hidden } : r),
   });
+  markMaskDirty(name);
   refreshMeta();
   bump();
 }
@@ -559,7 +583,7 @@ export function clearImageMask() {
   checkpoint(name);
   maskMap.delete(name);
   decodeCache.delete(name);
-  ui.maskDirty[name] = true;
+  markMaskDirty(name);
   ui.segSelectedRegion = 0;
   refreshMeta();
   bump();
@@ -706,6 +730,7 @@ export function serializeSegSettings(): SegmentationSettings {
     overlayOpacity: ui.segOverlayOpacity,
     classes: [...ui.segClasses],
     classColors: { ...ui.segClassColors },
+    cityscapesMap: { ...ui.segCityscapesMap },
   };
 }
 
@@ -715,10 +740,12 @@ export function loadSegSettings(s: SegmentationSettings | undefined) {
   if (typeof s.overlayOpacity === 'number') ui.segOverlayOpacity = s.overlayOpacity;
   if (Array.isArray(s.classes) && s.classes.length > 0) ui.segClasses = [...s.classes];
   if (s.classColors) ui.segClassColors = { ...ui.segClassColors, ...s.classColors };
+  if (s.cityscapesMap) ui.segCityscapesMap = { ...s.cityscapesMap };
 }
 
 export function markMasksSaved() {
   ui.maskDirty = {};
+  storageDirty = false;
 }
 
 export function getMaskDirty(name: string): boolean {
@@ -728,11 +755,16 @@ export function getMaskDirty(name: string): boolean {
 /** 删图片时把它的掩膜也删掉（否则以后重新导入同名图片会「继承」上一次的掩膜）。 */
 export function deleteImageMask(name: string) {
   if (!name) return;
-  maskMap.delete(name);
+  const had = maskMap.delete(name);
   decodeCache.delete(name);
   delete ui.maskDirty[name];
   refreshMeta();
   bump();
+  if (had) {
+    // 掩膜被删掉了，本地缓存也得跟着重写一次，否则重启后它会「复活」
+    storageDirty = true;
+    saveAnnotations();
+  }
 }
 
 /** 有掩膜的图片（批量导出用；getExportData 在 annotations 为空时返回 null，不能复用） */
@@ -753,3 +785,52 @@ export function getMaskForExport(name: string): { mask: ImageMask; map: Uint8Arr
   if (!map) return null;
   return { mask, map };
 }
+
+// ============================================================
+// 本地缓存（复用三种模式共用的保存链路）
+// ============================================================
+// 为什么不再坚持「掩膜只进工程文件」（方案 §10.2 的原话）：
+// 那样在分割模式下**永远显示「未保存」**，保存按钮/Ctrl+S 也没有任何效果 ——
+// 用户看到的就是「这个模式不保存」。改成：和标注一样，改动后 500 ms 自动写进
+// localStorage（独立 key，不污染 annotator_data），状态栏语义与另外两个模式完全一致。
+// 工程文件仍然是权威落盘方式；本地缓存只是防崩溃/方便接着改。
+
+function persistMasksToStorage(): { ok: boolean; message?: string } {
+  if (!storageDirty) return { ok: true };   // 没改动就不重写（避免检测模式下每次保存都重写几 MB）
+  const json = JSON.stringify(serializeMasks());
+  if (json.length > MASK_LS_BUDGET) {
+    return {
+      ok: false,
+      message:
+        `分割掩膜约 ${(json.length / 1048576).toFixed(1)} MB，超过本地缓存上限 ` +
+        `${(MASK_LS_BUDGET / 1048576).toFixed(1)} MB —— 请用工具栏「保存工程」落盘（改动还在内存里，没丢）`,
+    };
+  }
+  try {
+    localStorage.setItem(MASK_STORAGE_KEY, json);
+  } catch (e: any) {
+    return {
+      ok: false,
+      message: `分割掩膜写入本地缓存失败（${e?.message || e}）—— 请用「保存工程」落盘`,
+    };
+  }
+  storageDirty = false;
+  ui.maskDirty = {};
+  return { ok: true };
+}
+
+function restoreMasksFromStorage() {
+  try {
+    const raw = localStorage.getItem(MASK_STORAGE_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== 'object') return;
+    loadMasksFromProject(obj);
+    ui.maskDirty = {};
+    storageDirty = false;
+  } catch {
+    // 坏数据忽略，不影响启动
+  }
+}
+
+registerMaskPersistence(persistMasksToStorage, restoreMasksFromStorage);

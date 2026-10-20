@@ -108,6 +108,9 @@ export const ui = $state({
   /** 分割模式自己的类别表 —— 不写进检测/分类在用的 classes，避免污染它们的导出与统计 */
   segClasses: [...DEFAULT_SEG_CLASSES],
   segClassColors: { ...DEFAULT_SEG_COLORS },
+  /** 类别名 → Cityscapes trainId 的**手动覆盖**（预置 19 类已内置映射，这里只放用户自定义的开放词汇）。
+   *  未映射的类别在导出语义图时写 255(void)。 */
+  segCityscapesMap: {} as Record<string, number>,
   shortcuts: {
     select: 'v', rect: 'r', polygon: 'p', rotated: 'o', keypoint: 'k',
     sam: 'm', magicwand: 'w',
@@ -500,6 +503,8 @@ export function saveAnnotations() {
  *  - 工具栏「保存标注」按钮和 Ctrl+S 走这里，按下去状态栏马上变「已保存」；
  *  - 写 localStorage 失败（比如空间满）时**不**清「未保存」标志，并如实报错 ——
  *    以前这里 `catch {}` 吞掉异常、照样清标志，会变成「显示已保存但其实没存」。
+ *  - 分割模式的掩膜由 store 注册进来的钩子一并落盘（见 `registerMaskPersistence`），
+ *    这样三种模式共用**同一个**保存键 / 自动保存 / 状态栏语义。
  */
 export function saveAnnotationsNow(): boolean {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
@@ -509,6 +514,14 @@ export function saveAnnotationsNow(): boolean {
   } catch (e: any) {
     showToast(`保存失败：本地存储写入被拒绝（${e?.message || e}）`, 'error');
     return false;
+  }
+  // 分割掩膜跟着一起保存（store 里注册，state 不 import 它 → 不会成环）
+  if (saveMasksHook) {
+    const r = saveMasksHook();
+    if (!r.ok) {
+      showToast(r.message || '分割掩膜保存失败', 'error');
+      return false;   // 不清「未保存」：宁可显示未保存，也不要谎报已保存
+    }
   }
   // 写盘成功才清「未保存」标记
   Object.keys(imageModified).forEach(k => delete imageModified[k]);
@@ -527,6 +540,22 @@ export function loadSavedData() {
     if (data.skeletonId) ui.skeletonId = data.skeletonId;
     // 不恢复图片列表（dataUrl 刷新后失效，留空壳反而导致重新导入逻辑混乱；标注和文件名对应关系已保留，重新导入同名文件夹后自动匹配）
   } catch {}
+  // 分割掩膜也从本地缓存恢复（和 annotations 同一套「按文件名匹配」的语义）
+  try { loadMasksHook?.(); } catch {}
+}
+
+// ============================================================
+// 分割模式持久化钩子
+// ============================================================
+// state 不能直接 import segmentation/store（store 已经 import 这里了，会成环），
+// 所以由 store 在模块加载时把自己的存/取函数注册进来。
+type MaskSaveHook = () => { ok: boolean; message?: string };
+let saveMasksHook: MaskSaveHook | null = null;
+let loadMasksHook: (() => void) | null = null;
+
+export function registerMaskPersistence(save: MaskSaveHook, load: () => void) {
+  saveMasksHook = save;
+  loadMasksHook = load;
 }
 
 // 主题切换

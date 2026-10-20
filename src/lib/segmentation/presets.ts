@@ -35,6 +35,15 @@ export const SEG_PRESETS: SegPreset[] = [
   { name: 'bicycle', kind: 'instance', color: '#770b20' },
 ];
 
+/** Cityscapes 的 trainId（0..18，顺序与 SEG_PRESETS 一致）。
+ *
+ *  ⚠️ Cityscapes 官方是 **labelId(0..33)** 和 **trainId(0..18)** 两套编号，
+ *  训练用的语义图几乎都是 trainId。这里存的是 trainId；没映射到的类别一律写 255(void)，
+ *  **绝不能写 0**（0 在 Cityscapes 里是 road）。 */
+export const CITYSCAPES_TRAIN_ID: Record<string, number> = Object.fromEntries(
+  SEG_PRESETS.map((p, i) => [p.name, i])
+);
+
 export const DEFAULT_SEG_CLASSES: string[] = SEG_PRESETS.map(p => p.name);
 
 export const DEFAULT_SEG_COLORS: Record<string, string> = Object.fromEntries(

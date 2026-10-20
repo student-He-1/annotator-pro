@@ -11,7 +11,7 @@
   } from './lib/state.svelte';
   import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask, formatDropsKeypoints, formatLabel } from '$lib/export/formats';
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
-  import { getSegExportData, getSegBatchExportData } from '$lib/export/segmentation-export';
+  import { getSegExportFiles, getSegBatchFiles } from '$lib/export/segmentation-export';
   import { deleteImageMask } from '$lib/segmentation/store.svelte';
   import { saveProjectAs, loadProjectFromFile } from '$lib/project.svelte';
   import { fitToScreen, render, getMinZoom, clampPan } from '$lib/canvas/engine.svelte';
@@ -544,32 +544,52 @@
 
   /** 导出前的通用「写一个文件」：单图走原生另存为，批量走文件夹。
    *  两边都必须检查返回值 —— tauriInvoke 吞异常返回 null，不看就会出现
-   *  「提示导出成功、目录里一个文件都没有」（方案 §7 明确要求）。 */
+   *  「提示导出成功、目录里一个文件都没有」（方案 §7 明确要求）。
+   *  分割模式的导出是 async（PNG 要走 CompressionStream），且可能一个图出多个文件。 */
+  function segFileBase64(f: { content?: string; base64?: string }): string {
+    return f.base64 ?? textToBase64(f.content || '');
+  }
+
   async function handleSegExportCurrent() {
     const name = images[ui.currentImageIndex]?.name;
     if (!name) { showToast('请先选择一张图片', 'error'); return; }
-    if (!getSegExportData(name)) {
-      showToast('这张图还没有可导出的掩膜区域', 'error');
+    const format = ui.segExportFormat as any;
+    let files: Awaited<ReturnType<typeof getSegExportFiles>> = [];
+    try {
+      files = await getSegExportFiles(name, format);
+    } catch (e: any) {
+      showToast('导出失败：' + (e?.message || e), 'error');
       return;
     }
-    const merged = ui.segExportFormat === 'seg_coco_merged';
-    const file = merged ? getSegBatchExportData(true)[0] : getSegExportData(name);
-    if (!file) {
-      showToast('COCO 实例 JSON 只写「实例」区域；road/sky 这类整片(stuff)不进实例文件', 'error');
+    if (files.length === 0) {
+      showToast('这个格式没有可导出的内容（COCO 只写「实例」区域）', 'error');
       return;
     }
-    const contentBase64 = textToBase64(file.content);
-    const savedPath = await tauriInvoke('save_file_as', { defaultName: file.filename, contentBase64 });
-    if (savedPath) { showToast(`导出成功：${savedPath}`, 'success'); return; }
+    const f = files[0];
+    const contentBase64 = segFileBase64(f);
+    const savedPath = await tauriInvoke('save_file_as', { defaultName: f.filename, contentBase64 });
+    if (savedPath) {
+      showToast(`导出成功：${savedPath}`, 'success');
+      if (format === 'seg_instances') {
+        showToast('逐实例 PNG + 清单请用「批量导出」（单图另存为只能落一个文件）', 'info');
+      }
+      return;
+    }
     const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
     if (isTauri) { showToast('已取消导出', 'info'); return; }
-    downloadFile(file.filename, `data:${file.mimeType};base64,${contentBase64}`, file.mimeType);
+    downloadFile(f.filename, `data:${f.mimeType};base64,${contentBase64}`, f.mimeType);
     showToast('导出完成（浏览器下载）', 'success');
   }
 
   async function handleSegBatchExport() {
-    const merged = ui.segExportFormat === 'seg_coco_merged';
-    const files = getSegBatchExportData(merged);
+    const format = ui.segExportFormat as any;
+    let files: Awaited<ReturnType<typeof getSegBatchFiles>> = [];
+    try {
+      files = await getSegBatchFiles(format);
+    } catch (e: any) {
+      showToast('导出失败：' + (e?.message || e), 'error');
+      return;
+    }
     if (files.length === 0) { showToast('还没有可导出的掩膜区域', 'error'); return; }
 
     const dirPath = await tauriInvoke('pick_save_directory');
@@ -579,7 +599,9 @@
       // 浏览器：逐个下载
       let delay = 0;
       for (const f of files) {
-        setTimeout(() => downloadFile(f.filename, f.content, f.mimeType), delay);
+        const dataUrl = f.base64 ? `data:${f.mimeType};base64,${f.base64}` : f.content!;
+        const mime = f.mimeType;
+        setTimeout(() => downloadFile(f.filename, dataUrl, mime), delay);
         delay += 300;
       }
       showToast(`导出完成：${files.length} 个文件`, 'success');
@@ -603,7 +625,7 @@
       const ok = await tauriInvoke('save_file_base64', {
         dirPath,
         filename: unique,
-        contentBase64: textToBase64(f.content),
+        contentBase64: segFileBase64(f),
       });
       if (ok) count++; else failed++;
     }
@@ -1010,17 +1032,17 @@
    *  于是「把当前图删光 → 点保存」仍然显示「共 13 处标注」，切到别的图也不变，
    *  看起来像没刷新/卡死。这里直接读 annotations[当前图]，不经过任何 derived。 */
   function handleSaveAnnotationsNow() {
-    if (ui.workMode === 'segmentation') {
-      showToast('分割掩膜只随「保存工程」写盘，不进 localStorage', 'info');
-      return;
-    }
     const name = images[ui.currentImageIndex]?.name;
     const isCls = ui.workMode === 'classification';
+    const isSeg = ui.workMode === 'segmentation';
     const n = name
-      ? (isCls ? (ui.imageLabels[name]?.length || 0) : (annotations[name]?.length || 0))
+      ? (isCls
+        ? (ui.imageLabels[name]?.length || 0)
+        : isSeg ? (ui.maskCounts?.[name] || 0) : (annotations[name]?.length || 0))
       : 0;
+    // saveAnnotationsNow 自己会写分割掩膜（store 注册的钩子），失败时它已经报过错
     if (saveAnnotationsNow()) {
-      showToast(`已保存 · 当前图片 ${n} ${isCls ? '个标签' : '处标注'}`, 'success');
+      showToast(`已保存 · 当前图片 ${n} ${isCls ? '个标签' : isSeg ? '个区域' : '处标注'}`, 'success');
     }
   }
 
@@ -1177,7 +1199,7 @@
             <p>整张图片打类别标签</p>
           </button>
           <button class="mode-card" onclick={() => selectMode('segmentation')}>
-            <div class="mode-icon">🎨</div>
+            <div class="mode-icon">▦</div>
             <h3>图像分割</h3>
             <p>像素级掩膜 · SAM3 开放词汇</p>
           </button>

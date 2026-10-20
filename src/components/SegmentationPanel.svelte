@@ -10,10 +10,10 @@
     getCandidates, acceptCandidate, discardCandidate, acceptAllCandidates, discardAllCandidates,
     getRegions, selectRegion, deleteRegion, setRegionClass, toggleRegionHidden,
     clearImageMask, colorOfSegClass, ensureSegClass, checkSegBackend, runTextPrompt,
-    canUndoMask, canRedoMask, undoMask, redoMask, getMaskDirty,
+    canUndoMask, canRedoMask, undoMask, redoMask, getMaskDirty, getImageMask,
   } from '$lib/segmentation/store.svelte';
   import { SEG_PRESETS } from '$lib/segmentation/presets';
-  import { describeMasks } from '$lib/export/segmentation-export';
+  import { describeMasks, getUnmappedCityscapesClasses, SEG_EXPORT_FORMATS } from '$lib/export/segmentation-export';
 
   const colorOf = colorOfSegClass;
 
@@ -32,10 +32,8 @@
   const regions = $derived((ui.maskRev, curName ? getRegions(curName) : []));
   const cands = $derived((ui.maskRev, getCandidates()));
   const selected = $derived(ui.segSelectedRegion);
-  const segExportFormats = [
-    { value: 'seg_coco', label: 'COCO 实例 JSON（每图一个）' },
-    { value: 'seg_coco_merged', label: 'COCO 实例 JSON（合并一个）' },
-  ];
+  /** Cityscapes 语义图导出前要提醒的「映射不到」类别（它们会被写成 void=255） */
+  const unmapped = $derived((ui.maskRev, curName ? getUnmappedCityscapesClasses(getImageMask(curName)) : []));
 
   async function prompt(text: string) {
     if (busy) return;
@@ -141,7 +139,7 @@
         </span>
         <button class="btn-mini" onclick={connectBackend} disabled={busy}>{busy ? '…' : '连接'}</button>
       </div>
-      <p class="muted tiny">掩膜只随「保存工程」写盘，不进 localStorage（5 MB 装不下）。</p>
+      <p class="muted tiny">掩膜改动和标注一样自动保存（Ctrl+S 同款），工程文件用「保存工程」落盘。</p>
     </div>
 
     <!-- 文本提示：主力工作流 -->
@@ -224,7 +222,7 @@
         </div>
       {/if}
       {#if getMaskDirty(curName)}
-        <p class="muted tiny warn-text">有未写入工程文件的掩膜改动</p>
+        <p class="muted tiny warn-text">有未保存的掩膜改动（停手 0.5 秒会自动保存）</p>
       {/if}
     </div>
 
@@ -279,16 +277,27 @@
     <div class="section">
       <h4>导出</h4>
       <select class="text-input" bind:value={ui.segExportFormat}>
-        {#each segExportFormats as f}
+        {#each SEG_EXPORT_FORMATS as f}
           <option value={f.value}>{f.label}</option>
         {/each}
       </select>
       <p class="muted tiny">{describeMasks()}</p>
       <div class="row-line">
         <button class="btn-mini primary" onclick={props.onExportCurrent} disabled={regions.length === 0}>导出当前图</button>
-        <button class="btn-mini" onclick={props.onBatchExport}>批量导出</button>
+        <button class="btn-mini" onclick={props.onBatchExport} disabled={regions.length === 0 && (ui.maskTotal || 0) === 0}>批量导出</button>
       </div>
-      <p class="muted tiny">COCO 只写「实例」区域；road/sky 这类整片(stuff)留给语义图，不进实例 JSON。</p>
+      {#if ui.segExportFormat === 'seg_instances'}
+        <p class="muted tiny">单图「另存为」只能落一个文件 → 只写索引图；逐实例 PNG + 清单请用**批量导出**。</p>
+      {:else if ui.segExportFormat === 'seg_coco'}
+        <p class="muted tiny">COCO 只写「实例」区域；road/sky 这类整片(stuff)不进实例 JSON。</p>
+      {:else if ui.segExportFormat === 'seg_cityscapes'}
+        <p class="muted tiny">写 trainId(0..18)；未标注像素与未映射类别都写 255(void)，不会写成 0(road)。</p>
+        {#if unmapped.length > 0}
+          <p class="muted tiny warn-text">未映射类别（会变成 void）：{unmapped.join('、')}</p>
+        {/if}
+      {:else if ui.segExportFormat === 'seg_unet'}
+        <p class="muted tiny">单通道灰度，0=背景，k=类别表里的第 k 个（1-based）。</p>
+      {/if}
     </div>
 
     <!-- 快捷键 -->
