@@ -1,6 +1,7 @@
 /** 全局状态管理 — Svelte 5 runes */
 import type { Annotation, AnnotationType, ToolType, ImageInfo, ShortcutMap, ExportFormat, DragHandle, HistoryEntry, ImageSnapshot, Point } from './types';
 import { DEFAULT_SEG_CLASSES, DEFAULT_SEG_COLORS } from './segmentation/presets';
+import type { SegSweepResult } from './segmentation/types';
 
 // ============================================================
 // Reactive State — object/array types (exported directly, only properties mutated)
@@ -111,6 +112,17 @@ export const ui = $state({
   /** 类别名 → Cityscapes trainId 的**手动覆盖**（预置 19 类已内置映射，这里只放用户自定义的开放词汇）。
    *  未映射的类别在导出语义图时写 255(void)。 */
   segCityscapesMap: {} as Record<string, number>,
+  // ---- 一键全类扫描（P1c-1）----
+  /** 要扫的类别（从 segClasses 里勾选） */
+  segSweepClasses: [...DEFAULT_SEG_CLASSES],
+  /** 自动接受阈值：score ≥ 它的直接进正式掩膜；中间的留给用户复核 */
+  segSweepAutoAccept: 0.7,
+  segSweepRunning: false,
+  segSweepCancel: false,
+  segSweepDone: 0,
+  segSweepTotal: 0,
+  segSweepCurrent: '',
+  segSweepResults: [] as SegSweepResult[],
   shortcuts: {
     select: 'v', rect: 'r', polygon: 'p', rotated: 'o', keypoint: 'k',
     sam: 'm', magicwand: 'w',

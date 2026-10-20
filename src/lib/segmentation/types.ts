@@ -57,6 +57,19 @@ export interface MaskCandidate {
   box?: MaskBox;
 }
 
+/** 「一键全类扫描」里单个类别的结果 */
+export interface SegSweepResult {
+  className: string;
+  /** 这个类别一共命中几个候选 */
+  total: number;
+  /** 分数够高、已经自动接受的数量 */
+  accepted: number;
+  /** 分数在中间带、留着让用户复核的数量 */
+  review: number;
+  elapsedMs: number;
+  error?: string;
+}
+
 /** 工程文件里的分割设置（全部可选，旧工程零改动可读） */
 export interface SegmentationSettings {
   overlayMode?: 'instance' | 'class';

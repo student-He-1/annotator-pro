@@ -11,6 +11,8 @@
     getRegions, selectRegion, deleteRegion, setRegionClass, toggleRegionHidden,
     clearImageMask, colorOfSegClass, ensureSegClass, checkSegBackend, runTextPrompt,
     canUndoMask, canRedoMask, undoMask, redoMask, getMaskDirty, getImageMask,
+    runClassSweep, cancelClassSweep, toggleSweepClass, selectAllSweepClasses, clearSweepClasses,
+    reviewSweepClass,
   } from '$lib/segmentation/store.svelte';
   import { SEG_PRESETS } from '$lib/segmentation/presets';
   import { describeMasks, getUnmappedCityscapesClasses, SEG_EXPORT_FORMATS } from '$lib/export/segmentation-export';
@@ -34,6 +36,28 @@
   const selected = $derived(ui.segSelectedRegion);
   /** Cityscapes 语义图导出前要提醒的「映射不到」类别（它们会被写成 void=255） */
   const unmapped = $derived((ui.maskRev, curName ? getUnmappedCityscapesClasses(getImageMask(curName)) : []));
+
+  async function startSweep() {
+    if (busy) return;
+    busy = true;
+    try {
+      // 传 render 进去：扫描是逐词合并的，每合并完一个词就重画一次，边扫边能看到掩膜
+      await runClassSweep(() => render());
+      render();
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function reviewClass(className: string) {
+    busy = true;
+    try {
+      await reviewSweepClass(className);
+      render();
+    } finally {
+      busy = false;
+    }
+  }
 
   async function prompt(text: string) {
     if (busy) return;
@@ -158,6 +182,63 @@
             onclick={() => { ui.segText = p.name; void prompt(p.name); }} disabled={busy}>{p.name}</button>
         {/each}
       </div>
+    </div>
+
+    <!-- 一键全类扫描：SAM3 是 promptable 的，不给词不会自己分割，所以「一键识图」= 词表逐个跑 -->
+    <div class="section">
+      <div class="row-line">
+        <h4 style="margin:0">一键扫描</h4>
+        <button class="btn-mini" onclick={() => { selectAllSweepClasses(); }}>全选</button>
+        <button class="btn-mini" onclick={() => { clearSweepClasses(); }}>全不选</button>
+      </div>
+      <p class="muted tiny">
+        勾选类别后逐个跑 SAM3：分数 ≥ 自动接受阈值直接进掩膜，中间的留作复核。整轮只占**一个** Ctrl+Z。
+      </p>
+      <div class="chips">
+        {#each ui.segClasses as c}
+          <button class="chip small" class:active={ui.segSweepClasses.includes(c)}
+            style="border-color:{colorOf(c)}" disabled={ui.segSweepRunning}
+            onclick={() => toggleSweepClass(c)}>{c}</button>
+        {/each}
+      </div>
+      <div class="row-line">
+        <label class="tiny">自动接受 ≥</label>
+        <input class="num-input" type="number" step="0.05" min="0.05" max="0.99" bind:value={ui.segSweepAutoAccept} />
+        <span class="muted tiny">（低于它、且高于上面的请求阈值 → 待复核）</span>
+      </div>
+      {#if ui.segSweepRunning}
+        <div class="row-line">
+          <span class="tiny">扫描中 {ui.segSweepDone}/{ui.segSweepTotal} · {ui.segSweepCurrent || '…'}</span>
+          <button class="btn-mini danger" onclick={() => cancelClassSweep()}>取消</button>
+        </div>
+        <div class="bar"><div class="bar-fill" style="width:{ui.segSweepTotal ? Math.round(ui.segSweepDone / ui.segSweepTotal * 100) : 0}%"></div></div>
+      {:else}
+        <div class="row-line">
+          <button class="btn-mini primary" onclick={startSweep}
+            disabled={ui.segSweepClasses.length === 0 || busy}>开始扫描（{ui.segSweepClasses.length} 类）</button>
+        </div>
+      {/if}
+      {#if ui.segSweepResults.length > 0}
+        <div class="list" style="max-height:180px">
+          {#each ui.segSweepResults as r (r.className)}
+            <div class="item">
+              <span class="swatch" style="background:{colorOf(r.className)}"></span>
+              <span class="cls">{r.className}</span>
+              <span class="tiny">接受 {r.accepted}</span>
+              {#if r.review > 0}
+                <span class="kind stuff">复核 {r.review}</span>
+              {/if}
+              <span class="muted tiny">{r.elapsedMs}ms</span>
+              {#if r.error}
+                <span class="muted tiny warn-text" title={r.error}>失败</span>
+              {:else if r.review > 0}
+                <button class="btn-mini" title="重新取回这个词的候选逐个确认"
+                  onclick={() => reviewClass(r.className)}>复核</button>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <!-- 候选 -->
@@ -382,6 +463,8 @@
   .chip.active { color: var(--text-primary); background: var(--bg-active, var(--bg-hover)); box-shadow: inset 0 0 0 1px var(--accent-blue); }
 
   .list { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
+  .bar { height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden; margin-bottom: 8px; }
+  .bar-fill { height: 100%; background: var(--accent-blue, #58a6ff); transition: width 0.2s; }
   .item {
     display: flex; align-items: center; gap: 6px;
     padding: 4px 6px; border-radius: var(--radius-sm);
