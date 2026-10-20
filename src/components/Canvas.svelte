@@ -123,7 +123,7 @@
   // ============================================================
   // Mouse Events
   // ============================================================
-  /** 魔术棒的整图 ImageData 缓存（T2）。
+  /** 魔术棒的整图 ImageData 缓存。
    *  以前每点一次都 `createElement + drawImage + getImageData` 整图 ——
    *  2000×2000 就是 16 MB 拷贝，连点第二次照样 1~3 s。
    *  现在按「src + 尺寸」缓存一张；切图时清掉（别让 16 MB 一直挂着）。 */
@@ -1066,7 +1066,7 @@
   // ============================================================
   // 注意：`render` 必须一起导出 —— App 里有 `canvasRef?.render()`（LabelMe 导入后重画）。
   // 以前没导出，那行在运行时是「canvasRef.render is not a function」，
-  // 被 try/catch 吞成「导入失败」，直到 T6 清类型错才暴露出来。
+  // 被 try/catch 吞成「导入失败」，直到类型检查才把它暴露出来。
   export { handleMouseDown, handleMouseMove, handleMouseUp, handleDoubleClick, handleWheel, handleContextMenu, handleKeyDown, undo, redo, deleteSelected, copySelected, fitToScreen, render };
 </script>
 

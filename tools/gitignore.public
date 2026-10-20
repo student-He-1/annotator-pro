@@ -1,0 +1,39 @@
+# 依赖
+node_modules/
+.pnp
+.pnp.js
+
+# 前端构建产物
+dist/
+dist-ssr/
+*.local
+
+# Tauri / Rust 构建产物
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.sw?
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+*.tmp
+*.bak
+
+# 本地模型 / 数据（体积大，不入库）
+*.pt
+*.onnx
+*.safetensors
+models/
+datasets/
+
+# Python
+__pycache__/
+*.pyc

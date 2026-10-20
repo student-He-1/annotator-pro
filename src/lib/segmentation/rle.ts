@@ -2,7 +2,7 @@
  *
  *  ## 为什么形态和方案里写的不完全一样
  *
- *  方案 §4 写的是「counts 交替 [背景长, k长, 背景长, k长, ...]」，靠奇偶位置判断
+ *  一种常见写法是「counts 交替 [背景长, k长, 背景长, k长, ...]」，靠奇偶位置判断
  *  这一段是背景还是某个 region。这个约定在**两个不同区域像素相邻**时必然崩：
  *  SAM 经常把贴在一起的两辆车分成两个实例，索引图里就是 ...1,1,2,2...
  *  按行程编码得到「k=1 长 N、k=2 长 M」两个非零行程紧挨着，
@@ -106,7 +106,7 @@ export function removeOrdinalInPlace(map: Uint8Array, ordinal: number) {
 /** COCO 用的 RLE：**列主序**（Fortran order）的二值行程，counts 第一项是开头连续 0 的个数。
  *
  *  这是整套导出里最容易写出「看起来对、其实转了置」的地方，所以单独抽出来做单元校验：
- *  用 pycocotools 的 decode 反向还原，和原始掩膜逐像素比较（方案 §7 的验收要求）。
+ *  用 pycocotools 的 decode 反向还原，和原始掩膜逐像素比较。
  *  注意别用「转置整个 200 万像素数组」的实现 —— 又慢又容易把 x/y 写反。
  */
 export function rleBinaryColMajor(map: Uint8Array, width: number, height: number, ordinal: number): number[] {

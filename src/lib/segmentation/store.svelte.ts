@@ -1,6 +1,6 @@
 /** 分割模式的存储层：索引图 / 事务编码 / 候选 / 独立撤销栈 / overlay 缓存。
  *
- *  铁律 B（方案 §1）：分割模式的所有新状态都走独立命名空间 ——
+ *  设计约束：分割模式的所有新状态都走独立命名空间 ——
  *  数据存在本文件的 `maskMap` 里（**不进 $state**，2 MB 级数组不能被深代理包住），
  *  UI 状态走 `ui.mask* / ui.seg*`，和 `annotations` 零交叉：
  *  分割模式下 `annotations[name]` 恒为空，所以检测/分类的渲染、导出、统计、
@@ -23,7 +23,7 @@ const MAX_DECODED = 2;
  *
  *  localStorage 的额度约 5 MB（按字符算），标注数据还要共用同一份额度，
  *  所以这里给掩膜留 2.5 MB 预算：超了**不写**、状态栏保持「未保存」并明确提示改用「保存工程」。
- *  宁可显示未保存，也不要谎报已保存（这是第 9 批定下的语义）。 */
+ *  宁可显示未保存，也不要谎报已保存。 */
 const MASK_STORAGE_KEY = 'annotator_masks';
 const MASK_LS_BUDGET = 2.5 * 1024 * 1024;
 /** 有掩膜改动还没写进本地缓存（也覆盖「删图把掩膜删掉」这种非区域级改动） */
@@ -44,7 +44,7 @@ let candH = 0;
 const hiddenCandidates = new Set<number>();
 
 // ============================================================
-// 独立撤销栈（绝不和检测模式的 ui.history 混用，方案 §10.4）
+// 独立撤销栈（绝不和检测模式的 ui.history 混用）
 // ============================================================
 interface MaskSnap { name: string; mask: ImageMask | null }
 const undoStack: MaskSnap[] = [];
@@ -727,7 +727,7 @@ export async function checkSegBackend(): Promise<void> {
   ui.segBackendReady = st.ready;
   ui.segMaskSupported = st.maskSupported;
   if (!st.ready) showToast(st.error || '后端未就绪', 'error');
-  else if (!st.maskSupported) showToast('后端在线，但版本太旧：没有 mask 能力（方案 §5 的 return_mask / features）', 'error');
+  else if (!st.maskSupported) showToast('后端在线，但版本太旧：没有 mask 能力（需要 return_mask / features）', 'error');
   else showToast('SAM3 后端已就绪（支持像素级掩膜）', 'success');
 }
 
@@ -755,7 +755,7 @@ export function setHoverCandidate(k: number) {
 }
 
 // ============================================================
-// 一键全类扫描（P1c-1）
+// 一键全类扫描
 // ============================================================
 // SAM3 是 promptable 的：不给词它不会自己把图分割完。所以「一键识图」的正确形态是
 // **拿一张类别词表逐词跑**（一次 embed 之后每词只要 200~600 ms），再按分数分层：
@@ -1149,7 +1149,7 @@ export function getMaskForExport(name: string): { mask: ImageMask; map: Uint8Arr
 }
 
 // ============================================================
-// 修正工具（P1c-2）：画笔 / 橡皮 / 负点修正 / 孤岛清理 / 合并
+// 修正工具：画笔 / 橡皮 / 负点修正 / 孤岛清理 / 合并
 // ============================================================
 // 一律遵守：改之前 `checkpoint()`（这样 Ctrl+Z 一步退回一次编辑），改完
 // `finalizeMaskEdit()` 重算面积/包围盒并顺手把「被搓成 0 像素的区域」删掉。
@@ -1455,7 +1455,7 @@ export function mergeRegionInto(from: number, to: number) {
 // ============================================================
 // 本地缓存（复用三种模式共用的保存链路）
 // ============================================================
-// 为什么不再坚持「掩膜只进工程文件」（方案 §10.2 的原话）：
+// 为什么不再坚持「掩膜只进工程文件」：
 // 那样在分割模式下**永远显示「未保存」**，保存按钮/Ctrl+S 也没有任何效果 ——
 // 用户看到的就是「这个模式不保存」。改成：和标注一样，改动后 500 ms 自动写进
 // localStorage（独立 key，不污染 annotator_data），状态栏语义与另外两个模式完全一致。

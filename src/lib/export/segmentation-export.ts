@@ -238,7 +238,7 @@ function buildCoco(names: string[]): { content: string; imageCount: number; annC
     annotations: outAnns,
     categories,
   };
-  // 紧凑输出：counts 动辄上千个数字，缩进会把文件体积放大 3~4 倍（方案 §7）
+  // 紧凑输出：counts 动辄上千个数字，缩进会把文件体积放大 3~4 倍
   return { content: JSON.stringify(payload), imageCount: outImages.length, annCount: outAnns.length };
 }
 

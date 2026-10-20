@@ -81,7 +81,7 @@ export function colorForNewSegClass(existingCount: number): string {
   return EXTRA_SEG_COLORS[existingCount % EXTRA_SEG_COLORS.length];
 }
 
-/** 驾驶场景的中文长尾词（方案 §6 要求「扩充驾驶词表」）。
+/** 驾驶场景的中文长尾词。
  *
  *  刻意**不**写进 `sam.ts` 的 `PROMPT_ZH_TO_EN`：那是检测模式的共用映射表，
  *  改它等于动现有模式的行为（铁律 A）。分割模式先查这张表，查不到再退回 sam.ts 的映射，

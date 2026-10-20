@@ -13,8 +13,6 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-dialog": "^2.0.0",
-    "@tauri-apps/plugin-fs": "^2.0.0",
     "onnxruntime-web": "^1.30.0"
   },
   "devDependencies": {

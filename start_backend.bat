@@ -10,6 +10,8 @@ set TORCH_HOME=E:\TorchHub
 set TORCHINDUCTOR_CACHE_DIR=E:\TorchHub\inductor_cache
 set TRITON_CACHE_DIR=E:\TorchHub\triton_cache
 set PYTHONIOENCODING=utf-8
+set SAM3_MODEL_PATH=E:\Doubao download\sam3.pt
+set POSE_MODEL_PATH=E:\Doubao download\yolov8n-pose.pt
 
 echo [1/2] Loading SAM3 model (10-30s, do not close)...
 echo.

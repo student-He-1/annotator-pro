@@ -71,7 +71,7 @@
   let propsCollapsed = $state(false);
 
   // Svelte 5 的组件类型是 `Component`（不是类），`InstanceType<typeof Canvas>` 在类型上
-  // 不成立（T6 的存量报错就是这么来的）。这里只用到下面这些方法，显式写清楚即可。
+  // 不成立（类型检查里这类报错就是这么来的）。这里只用到下面这些方法，显式写清楚即可。
   interface CanvasApi {
     getImageInfo(): string;
     getWelcomeVisible(): boolean;
@@ -502,7 +502,7 @@
    *
    *  两种模式的两个导出入口（属性面板按钮、工具栏 ↓）全部走这里，原因：
    *  1. 原来这段逻辑写了两份，都**没检查 `save_file_base64` 的返回值** ——
-   *     写盘失败照样弹「导出成功」，目录里一个文件都没有（第 5 批 #18 的同一类坑）。
+   *     写盘失败照样弹「导出成功」，目录里一个文件都没有（都是"没检查返回值"的同一类坑）。
    *  2. 原来还有两条 `ui.exportFormat === 'classification_csv'` 的分支，但
    *     `classification_csv` 根本不在格式下拉的 formats 里、分类模式下下拉框也不渲染，
    *     所以那两条永远走不到，是死代码。
@@ -556,7 +556,7 @@
 
   /** 导出前的通用「写一个文件」：单图走原生另存为，批量走文件夹。
    *  两边都必须检查返回值 —— tauriInvoke 吞异常返回 null，不看就会出现
-   *  「提示导出成功、目录里一个文件都没有」（方案 §7 明确要求）。
+   *  「提示导出成功、目录里一个文件都没有」。
    *  分割模式的导出是 async（PNG 要走 CompressionStream），且可能一个图出多个文件。 */
   function segFileBase64(f: { content?: string; base64?: string }): string {
     return f.base64 ?? textToBase64(f.content || '');

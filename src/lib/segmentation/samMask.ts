@@ -4,7 +4,7 @@
  *  只解析 polygon），分割模式需要的是「一张索引图 PNG + 原图分辨率的真掩膜」，
  *  上传也用 PNG 保证像素精确。宁可复制几条 fetch，也不动检测模式在用的代码。
  *
- *  后端契约见 图像分割模式-实施方案.md §5：
+ *  后端契约：
  *    GET  /health   → features: ["mask"]（缺省视为旧后端，优雅降级）
  *    POST /pcs      → return_mask=true 时多返回 mask_png（一张索引图，值 k = instances[k-1]）
  *    POST /predict  → return_mask=true 时多返回 mask_png（单实例二值 0/255）
@@ -59,7 +59,7 @@ function isTauri(): boolean {
 /** 探测后端能力。桌面端会顺带尝试拉起 sidecar（和检测模式同一个命令）。
  *
  *  注意：`sam_sidecar_start` 找的是 **exe 同级 `sidecar/sam_server.py`**，
- *  而打包输出目录里并没有这个文件（方案 §3 修正 ①：sidecar 从未随 exe 发布）。
+ *  而打包输出目录里并没有这个文件（sidecar 从未随 exe 发布）。
  *  所以这里绝不能「拉起失败就直接报错」——照文档手动起的后端还在 1421 上跑着，
  *  正确做法是忽略拉起失败，继续探测 /health。 */
 export async function connectSegBackend(startSidecar = true): Promise<{ ready: boolean; maskSupported: boolean; error?: string }> {
@@ -255,9 +255,9 @@ export async function pcsWithMask(
       console.warn(`[segmentation] 索引图最大值 ${maxK} > 实例数 ${instances.length}，多出来的值 ${instances.length + 1}..${maxK} 会被忽略`);
     }
   } else if (instances.length > 0) {
-    // 有实例却没有掩膜 = 后端版本太旧（方案 §5 之前的实现）
+    // 有实例却没有掩膜 = 后端版本太旧（旧版只返回 polygon）
     maskSupported = false;
-    throw new Error('后端没有返回 mask_png —— 当前的 sam_server.py 还不支持像素级掩膜，请更新后端（方案 §5）');
+    throw new Error('后端没有返回 mask_png —— 当前的 sam_server.py 还不支持像素级掩膜，请更新后端（需要 return_mask）');
   }
   // instances.length === 0 且没有掩膜：这是**正常空结果**（这个词在这张图上没东西），
   // 不是错误，调用方会提示「没有分割出任何区域」。

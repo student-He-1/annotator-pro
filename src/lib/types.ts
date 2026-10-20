@@ -8,7 +8,7 @@ export type AnnotationType = 'rect' | 'polygon' | 'rotated' | 'keypoint';
 export type ToolType = 'select' | AnnotationType | 'magicwand' | 'sam'
   /** 分割模式工具（第三个模式）。前缀 seg_ 保证和上面检测模式的工具名不冲突 */
   | 'seg_select' | 'seg_text' | 'seg_point' | 'seg_box'
-  /** P1c-2 修正工具 */
+  /** 修正工具 */
   | 'seg_brush' | 'seg_eraser' | 'seg_refine';
 
 /** 点坐标 */

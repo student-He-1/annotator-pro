@@ -28,13 +28,18 @@ from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 
 # ====== 配置 ======
+# 模型路径一律走环境变量；没设就找脚本旁边的 models/ 目录。
+# （源码里不留任何本机绝对路径，方便把仓库公开出去）
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_MODELS_DIR = os.path.join(_HERE, "models")
+
 MODEL_PATH = os.environ.get(
     "SAM3_MODEL_PATH",
-    r"E:\Doubao download\sam3.pt"
+    os.path.join(_MODELS_DIR, "sam3.pt"),
 )
 POSE_MODEL_PATH = os.environ.get(
     "POSE_MODEL_PATH",
-    r"E:\Doubao download\yolov8n-pose.pt"
+    os.path.join(_MODELS_DIR, "yolov8n-pose.pt"),
 )
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("SAM_PORT", "1421"))

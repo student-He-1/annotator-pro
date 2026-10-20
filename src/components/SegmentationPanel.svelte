@@ -346,7 +346,7 @@
       {/if}
     </div>
 
-    <!-- 修正工具（P1c-2） -->
+    <!-- 修正工具 -->
     <div class="section">
       <h4>修正</h4>
       <div class="row-line">

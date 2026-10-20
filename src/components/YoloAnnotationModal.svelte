@@ -220,7 +220,7 @@
           <label class="file-label">
             <span class="file-caption">模型文件 (.onnx)</span>
             <!-- 原生 input 视觉隐藏、靠 label 触发：否则浏览器自带「选择文件 未选择文件」一行，
-                 和下面自绘的文件名重复（T4） -->
+                 和下面自绘的文件名重复 -->
             <input class="file-input" type="file" accept=".onnx" onchange={handleModelFile} />
             <span class="file-pick">
               <span class="file-btn">选择文件</span>

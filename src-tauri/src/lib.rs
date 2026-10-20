@@ -7,11 +7,11 @@ use tauri::State;
 
 static CHILD: std::sync::OnceLock<Mutex<Option<std::process::Child>>> = std::sync::OnceLock::new();
 
-/// Debug log to file
+/// Debug log to file（写系统临时目录：源码里不留任何本机绝对路径）
 fn dbg_log(msg: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
-        .open(r"D:\桌面\图像标注\annotator-pro\tauri_debug.log") {
+    let path = std::env::temp_dir().join("annotator_pro_debug.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "{}", msg);
     }
 }
@@ -286,8 +286,8 @@ async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String
     }
 
     // 找 Python 路径
-    // 优先读环境变量 SAM_PYTHON，否则用默认路径
-    let python_exe = std::env::var("SAM_PYTHON").unwrap_or_else(|_| r"D:\79458\Documents\anaconda3\envs\deeplearning\python.exe".to_string());
+    // 优先读环境变量 SAM_PYTHON，否则用 PATH 里的 python
+    let python_exe = std::env::var("SAM_PYTHON").unwrap_or_else(|_| "python".to_string());
     // 脚本路径：exe 同级 sidecar/
     let exe_dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("no exe dir")?.to_path_buf();
     let script = exe_dir.join("sidecar").join("sam_server.py");
@@ -433,7 +433,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
         .manage(SidecarState {
             child: Mutex::new(None),
             port: Mutex::new(None),
@@ -475,12 +474,7 @@ pub fn run() {
                 tauri::RunEvent::Resumed => "Resumed".to_string(),
                 _ => "other".to_string(),
             };
-            {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(r"D:\桌面\图像标注\annotator-pro\tauri_debug.log") {
-                    let _ = writeln!(f, "RunEvent: {}", name);
-                }
-            }
+            dbg_log(&format!("RunEvent: {}", name));
             if let tauri::RunEvent::Exit = event {
                 if let Some(g) = CHILD.get() {
                     if let Ok(mut l) = g.lock() {

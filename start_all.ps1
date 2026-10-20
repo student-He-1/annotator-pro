@@ -13,6 +13,9 @@ $env:TORCH_HOME = "E:\TorchHub"
 $env:TORCHINDUCTOR_CACHE_DIR = "E:\TorchHub\inductor_cache"
 $env:TRITON_CACHE_DIR = "E:\TorchHub\triton_cache"
 $env:PYTHONIOENCODING = "utf-8"
+# 模型路径走环境变量（源码里不再写死绝对路径，见第 24 批）
+$env:SAM3_MODEL_PATH = "E:\Doubao download\sam3.pt"
+$env:POSE_MODEL_PATH = "E:\Doubao download\yolov8n-pose.pt"
 
 $backendScript = Join-Path $root "src-tauri\sidecar\sam_server.py"
 $backend = Start-Process -FilePath "D:\79458\Documents\anaconda3\envs\deeplearning\python.exe" `
