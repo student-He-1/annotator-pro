@@ -4,7 +4,7 @@
     ui, images, classes, classColors, getClassCounts,
     COLORS, getClassColor, getCurrentAnnotations, selectAnnotation, deleteAnnotation,
     pushHistory, showToast, batchDeleteAll, getActiveClass, setActiveClass, annotations, saveAnnotations,
-    getNextAnnotationId, addAnnotation, markModified, getKeypointCount,
+    getNextAnnotationId, addAnnotation, markModified, getKeypointCount, captureUndoBaseline,
   } from '$lib/state.svelte';
   import { keypointDisplayName } from '$lib/skeletons';
   import { render } from '$lib/canvas/engine.svelte';
@@ -311,6 +311,9 @@
     batchProgress = 0;
     const failed: { name: string; error: string }[] = [];
     let added = 0;
+    // 批量会一次改多张图：处理前先补齐每张图的撤销基线，并记录实际被改到的图。
+    for (const t of targets) captureUndoBaseline(t.name);
+    const changed: string[] = [];
 
     // 每处理完一张让出一帧，否则进度条在整批期间都停在 0，看起来就像卡死
     const onProgress = async (p: { done: number }) => {
@@ -338,6 +341,7 @@
           if (newAnns.length > 0) {
             annotations[name] = [...(annotations[name] || []), ...newAnns];
             added += newAnns.length;
+            changed.push(name);
           }
         }
       } else {
@@ -361,11 +365,13 @@
           if (newAnns.length > 0) {
             annotations[name] = [...(annotations[name] || []), ...newAnns];
             added += newAnns.length;
+            changed.push(name);
           }
         }
       }
 
-      pushHistory();
+      // 一次批量涉及的图整体进一条历史，Ctrl+Z 才能整体还原
+      pushHistory(changed);
       saveAnnotations();
       render();
 

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from '$lib/i18n.svelte';
-  import { ui, images, annotations, showToast, pushHistory, saveAnnotations, getActiveClass } from '$lib/state.svelte';
+  import { ui, images, annotations, showToast, pushHistory, saveAnnotations, getActiveClass, captureUndoBaseline } from '$lib/state.svelte';
   import { loadModel, isModelLoaded, getModelName, segment, DEFAULT_SAM_CONFIG, clearCache } from '$lib/sam';
   import type { SamResult } from '$lib/sam';
   import type { Annotation } from '$lib/types';
@@ -79,6 +79,9 @@
       progress = { current: 0, total: images.length };
       const failed: string[] = [];
       let count = 0;
+      // 批量改多张图：处理前先补齐每张图的撤销基线，并记录实际被改到的图。
+      for (const img of images) captureUndoBaseline(img.name);
+      const changed: string[] = [];
       for (let i = 0; i < images.length; i++) {
         progress.current = i + 1;
         await new Promise(r => setTimeout(r, 0));   // 让进度条有机会刷新
@@ -106,13 +109,15 @@
             };
             annotations[name] = [...existing, ann];
             count++;
+            changed.push(name);
           }
         } catch (e: any) {
           failed.push(`${imgData.name}: ${e?.message || e}`);
         }
       }
       clearCache();
-      pushHistory();
+      // 一次批量涉及的图整体进一条历史，Ctrl+Z 才能整体还原
+      pushHistory(changed);
       saveAnnotations();
       render();   // 批量直接写了 annotations，画布是命令式绘制，不会自己刷
       if (failed.length > 0) {

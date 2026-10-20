@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from '$lib/i18n.svelte';
-  import { ui, images, annotations, addAnnotation, showToast, getNextAnnotationId, pushHistory, saveAnnotations } from '$lib/state.svelte';
+  import { ui, images, annotations, addAnnotation, showToast, getNextAnnotationId, pushHistory, saveAnnotations, captureUndoBaseline } from '$lib/state.svelte';
   import { loadModel, getModelName, getClassNames, detect, DEFAULT_YOLO_CONFIG } from '$lib/yolo';
   import { render } from '$lib/canvas/engine.svelte';
   import type { Detection } from '$lib/yolo';
@@ -90,6 +90,9 @@
       let totalDetections = 0;
 
       const failed: string[] = [];
+      // 批量改多张图：处理前先补齐每张图的撤销基线，并把「实际被改到的图」记下来。
+      for (const img of images) captureUndoBaseline(img.name);
+      const changed: string[] = [];
       for (let i = 0; i < images.length; i++) {
         progress.current = i + 1;
         await new Promise(r => setTimeout(r, 0));   // 让进度条有机会刷新
@@ -132,13 +135,15 @@
           if (newAnns.length > 0) {
             annotations[name] = [...existing, ...newAnns];
             totalDetections += newAnns.length;
+            changed.push(name);
           }
         } catch (e: any) {
           failed.push(`${imgData.name}: ${e?.message || e}`);
         }
       }
 
-      pushHistory();
+      // 一次批量涉及的图整体进一条历史，Ctrl+Z 才能整体还原
+      pushHistory(changed);
       saveAnnotations();
       render();   // 批量写的是 annotations，画布不会自动跟着刷
       if (failed.length > 0) {

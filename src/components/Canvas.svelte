@@ -814,27 +814,33 @@
 
   /** 撤销「history[index] 这次操作」时，这张图该回到哪个状态。
    *
-   *  历史里可能混着别的图的操作（画 A → 切到 B → 画 B），
-   *  所以不能无脑用 history[index-1]，得往回找**同一张图**上一次记录的状态。
+   *  历史里可能混着别的图的操作（画 A → 切到 B → 画 B），也可能一条记录同时含多张图
+   *  （批量操作），所以不能无脑用 history[index-1]，得往回找**同一张图**上一次记录的状态。
    *  找不到说明这是这张图本轮第一次被改动 → 用它加载时的初始基线。
    *  快照里同时含 annotations 和分类标签 labels（两种模式共用同一套撤销）。
    */
-  function snapshotBefore(curName: string, fromIndex: number): { annotations: Annotation[]; labels: string[] } {
+  function snapshotBefore(imageName: string, fromIndex: number): { annotations: Annotation[]; labels: string[] } {
     for (let j = fromIndex; j >= 0; j--) {
       const e = ui.history[j];
-      if (e.imageName === curName) return { annotations: e.annotations, labels: e.labels || [] };
+      if (!e) continue;
+      const hit = e.changes.find(c => c.imageName === imageName);
+      if (hit) return { annotations: hit.annotations, labels: hit.labels || [] };
     }
-    return getUndoBaseline(curName);
+    return getUndoBaseline(imageName);
   }
 
   function undo() {
     if (ui.historyIndex < 0) return;
-    // cur = 这次要撤销掉的那一步，要还原的是它所在的图
+    // cur = 这次要撤销掉的那一步；一条记录可能涉及多张图（批量操作）
     const cur = ui.history[ui.historyIndex];
     ui.historyIndex = ui.historyIndex - 1;
 
-    applySnapshot(cur.imageName, snapshotBefore(cur.imageName, ui.historyIndex));
-    focusImageByName(cur.imageName);
+    // 逐张回到「该图上一次记录的状态」——批量操作才能整体还原
+    for (const ch of cur.changes) {
+      applySnapshot(ch.imageName, snapshotBefore(ch.imageName, ui.historyIndex));
+    }
+    const focusName = cur.changes[0]?.imageName;
+    if (focusName) focusImageByName(focusName);
 
     ui.selectedAnnotation = null;
     ui.drawingAnnotation = null;
@@ -848,11 +854,13 @@
     if (ui.historyIndex >= ui.history.length - 1) return;
     ui.historyIndex = ui.historyIndex + 1;
     const entry = ui.history[ui.historyIndex];
-    applySnapshot(entry.imageName, { annotations: entry.annotations, labels: entry.labels || [] });
-    if (entry.imageName !== images[ui.currentImageIndex]?.name) {
-      const idx = images.findIndex(img => img.name === entry.imageName);
-      if (idx >= 0) ui.currentImageIndex = idx;
+    // 逐张写回「操作之后」的状态
+    for (const ch of entry.changes) {
+      applySnapshot(ch.imageName, { annotations: ch.annotations, labels: ch.labels || [] });
     }
+    const focusName = entry.changes[0]?.imageName;
+    if (focusName) focusImageByName(focusName);
+
     ui.selectedAnnotation = null;
     render();
     saveAnnotations();

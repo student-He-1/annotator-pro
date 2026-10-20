@@ -1,5 +1,5 @@
-﻿<script lang="ts">
-  import { images, classes, showToast, ui, saveAnnotations } from '$lib/state.svelte';
+<script lang="ts">
+  import { images, classes, showToast, ui, saveAnnotations, pushHistory, captureUndoBaseline } from '$lib/state.svelte';
   import { batchChangeClass, batchDeleteClass, batchDeleteAll, copyToAllSubsequent } from '$lib/state.svelte';
 
   interface Props {
@@ -18,15 +18,21 @@
   // 批量改类别
   let changeOldClass = $state('');
   let changeNewClass = $state('');
-  let changeScope = $state<'all' | 'current'>('all');
+  let changeScope = $state<'all' | 'current' | 'range'>('all');
 
   // 批量删除
   let deleteClass = $state('');
-  let deleteScope = $state<'all' | 'current'>('all');
+  let deleteScope = $state<'all' | 'current' | 'range'>('all');
   let deleteAll = $state(false);
 
   function getCurrentImageName(): string {
     return ui.currentImageIndex >= 0 && images[ui.currentImageIndex] ? images[ui.currentImageIndex].name : '';
+  }
+
+  /** 作用范围的中文描述，用于确认弹窗文案 */
+  function scopeLabel(scope: 'all' | 'current' | 'range'): string {
+    if (scope === 'range') return `第 ${rangeStart}-${rangeEnd} 张`;
+    return scope === 'all' ? '所有图片' : '当前图片';
   }
 
   function handleChangeClass() {
@@ -38,7 +44,7 @@
       showToast('原类别和新类别不能相同', 'error');
       return;
     }
-    const count = batchChangeClass(changeOldClass, changeNewClass, changeScope);
+    const count = batchChangeClass(changeOldClass, changeNewClass, changeScope, rangeStart, rangeEnd);
     if (count > 0) {
       showToast(`已将 ${count} 个标注从 "${changeOldClass}" 改为 "${changeNewClass}"`, 'success');
       onRefresh();
@@ -50,15 +56,15 @@
   function handleDelete() {
     let count = 0;
     if (deleteAll) {
-      if (!confirm(`确定要删除${changeScope === 'all' ? '所有图片' : '当前图片'}的全部标注吗？此操作不可撤销。`)) return;
-      count = batchDeleteAll(deleteScope);
+      if (!confirm(`确定要删除${scopeLabel(deleteScope)}的全部标注吗？此操作不可撤销。`)) return;
+      count = batchDeleteAll(deleteScope, rangeStart, rangeEnd);
     } else {
       if (!deleteClass) {
         showToast('请选择要删除的类别', 'error');
         return;
       }
-      if (!confirm(`确定要删除${deleteScope === 'all' ? '所有图片' : '当前图片'}中所有 "${deleteClass}" 类别的标注吗？`)) return;
-      count = batchDeleteClass(deleteClass, deleteScope);
+      if (!confirm(`确定要删除${scopeLabel(deleteScope)}中所有 "${deleteClass}" 类别的标注吗？`)) return;
+      count = batchDeleteClass(deleteClass, deleteScope, rangeStart, rangeEnd);
     }
     if (count > 0) {
       showToast(`已删除 ${count} 个标注`, 'success');
@@ -100,16 +106,21 @@
     const start = Math.max(0, rangeStart - 1);
     const end = Math.min(images.length, rangeEnd);
     let count = 0;
+    const changed: string[] = [];
     for (let i = start; i < end; i++) {
       const imgName = images[i].name;
+      captureUndoBaseline(imgName);   // 批量前先补基线，撤销到底才不会清空
       if (ui.imageLabels[imgName]) {
         const before = ui.imageLabels[imgName].length;
         ui.imageLabels[imgName] = ui.imageLabels[imgName].filter(l => l !== deleteClass);
-        count += before - ui.imageLabels[imgName].length;
+        const removed = before - ui.imageLabels[imgName].length;
+        if (removed > 0) changed.push(imgName);
+        count += removed;
       }
     }
     if (count > 0) {
       showToast('已删除 ' + count + ' 个标签', 'success');
+      pushHistory(changed);   // 一次批量整体进一条历史，Ctrl+Z 能整体还原
       saveAnnotations();
       onRefresh();
     } else {
@@ -126,16 +137,20 @@
     const start = Math.max(0, rangeStart - 1);
     const end = Math.min(images.length, rangeEnd);
     let count = 0;
+    const changed: string[] = [];
     for (let i = start; i < end; i++) {
       const imgName = images[i].name;
+      captureUndoBaseline(imgName);   // 批量前先补基线，撤销到底才不会清空
       if (!ui.imageLabels[imgName]) ui.imageLabels[imgName] = [];
       if (!ui.imageLabels[imgName].includes(batchLabel)) {
         ui.imageLabels[imgName].push(batchLabel);
         count++;
+        changed.push(imgName);
       }
     }
     if (count > 0) {
       showToast('已为 ' + count + ' 张图片打上标签', 'success');
+      pushHistory(changed);   // 一次批量整体进一条历史，Ctrl+Z 能整体还原
       saveAnnotations();
       onRefresh();
     } else {
@@ -248,8 +263,24 @@
                   <input type="radio" bind:group={changeScope} value="current" />
                   当前图片 ({getCurrentImageName() || '未选择'})
                 </label>
+                <label class="radio">
+                  <input type="radio" bind:group={changeScope} value="range" />
+                  图片范围
+                </label>
               </div>
             </div>
+            {#if changeScope === 'range'}
+              <div class="form-row">
+                <label>图片范围</label>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <span>第</span>
+                  <input type="number" bind:value={rangeStart} min="1" max={images.length} style="width:60px" />
+                  <span>到</span>
+                  <input type="number" bind:value={rangeEnd} min="1" max={images.length} style="width:60px" />
+                  <span>张 (共 {images.length} 张)</span>
+                </div>
+              </div>
+            {/if}
             <button class="btn primary" onclick={handleChangeClass}>执行改类别</button>
           </div>
         {/if}
@@ -325,8 +356,24 @@
                   <input type="radio" bind:group={deleteScope} value="current" />
                   当前图片 ({getCurrentImageName() || '未选择'})
                 </label>
+                <label class="radio">
+                  <input type="radio" bind:group={deleteScope} value="range" />
+                  图片范围
+                </label>
               </div>
             </div>
+            {#if deleteScope === 'range'}
+              <div class="form-row">
+                <label>图片范围</label>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <span>第</span>
+                  <input type="number" bind:value={rangeStart} min="1" max={images.length} style="width:60px" />
+                  <span>到</span>
+                  <input type="number" bind:value={rangeEnd} min="1" max={images.length} style="width:60px" />
+                  <span>张 (共 {images.length} 张)</span>
+                </div>
+              </div>
+            {/if}
             <div class="warning-box">
               ⚠ 删除操作不可撤销，请确认后执行
             </div>

@@ -1,5 +1,5 @@
 /** 全局状态管理 — Svelte 5 runes */
-import type { Annotation, AnnotationType, ToolType, ImageInfo, ShortcutMap, ExportFormat, DragHandle, HistoryEntry, Point } from './types';
+import type { Annotation, AnnotationType, ToolType, ImageInfo, ShortcutMap, ExportFormat, DragHandle, HistoryEntry, ImageSnapshot, Point } from './types';
 
 // ============================================================
 // Reactive State — object/array types (exported directly, only properties mutated)
@@ -219,60 +219,88 @@ export function copySelectedToNextImage(): boolean {
 // Batch Operations
 // ============================================================
 
-// 批量改类别：scope='all' 所有图片，'current' 当前图片
-export function batchChangeClass(oldClass: string, newClass: string, scope: 'all' | 'current' = 'all'): number {
+/** 批量操作的作用范围：全部图片 / 当前图片 / 指定图片区间（第 start~end 张，1 起、闭区间）。 */
+export type BatchScope = 'all' | 'current' | 'range';
+
+/** 把 scope 解析成实际的图片列表。range 的 start/end 是界面上的 1 起序号。 */
+export function batchTargets(scope: BatchScope, rangeStart = 1, rangeEnd = 0): ImageInfo[] {
+  if (scope === 'current') return ui.currentImageIndex >= 0 ? [images[ui.currentImageIndex]] : [];
+  if (scope === 'range') {
+    const s = Math.max(0, rangeStart - 1);
+    const e = Math.min(images.length, rangeEnd > 0 ? rangeEnd : images.length);
+    return s < e ? images.slice(s, e) : [];
+  }
+  return images;
+}
+
+// 批量改类别：scope='all' 所有图片，'current' 当前图片，'range' 指定区间
+export function batchChangeClass(oldClass: string, newClass: string, scope: BatchScope = 'all', rangeStart = 1, rangeEnd = 0): number {
   let count = 0;
-  const targetImages = scope === 'all' ? images : (ui.currentImageIndex >= 0 ? [images[ui.currentImageIndex]] : []);
+  const targetImages = batchTargets(scope, rangeStart, rangeEnd);
+  // 批量会一次改多张图：改动**前**先给每张图记下本轮初始状态。
+  // 否则那些「还没打开过」的图没有基线，撤销到底会被还原成空白（原始标注丢失）。
+  for (const img of targetImages) captureUndoBaseline(img.name);
+  const changed: string[] = [];
   for (const img of targetImages) {
     const anns = annotations[img.name];
     if (!anns) continue;
+    let hit = 0;
     for (const ann of anns) {
       if (ann.className === oldClass) {
         ann.className = newClass;
         count++;
+        hit++;
       }
     }
+    if (hit > 0) { changed.push(img.name); imageModified[img.name] = true; }
   }
   if (count > 0) {
-    markModified();
+    // 一次操作涉及的所有图，整体进一条历史，Ctrl+Z 才能整体还原。
+    pushHistory(changed);
     saveAnnotations();
   }
   return count;
 }
 
-// 批量删除某类别：scope='all' 所有图片，'current' 当前图片
-export function batchDeleteClass(className: string, scope: 'all' | 'current' = 'all'): number {
+// 批量删除某类别：scope='all' 所有图片，'current' 当前图片，'range' 指定区间
+export function batchDeleteClass(className: string, scope: BatchScope = 'all', rangeStart = 1, rangeEnd = 0): number {
   let count = 0;
-  const targetImages = scope === 'all' ? images : (ui.currentImageIndex >= 0 ? [images[ui.currentImageIndex]] : []);
+  const targetImages = batchTargets(scope, rangeStart, rangeEnd);
+  for (const img of targetImages) captureUndoBaseline(img.name);
+  const changed: string[] = [];
   for (const img of targetImages) {
     const anns = annotations[img.name];
     if (!anns) continue;
     const before = anns.length;
     annotations[img.name] = anns.filter(a => a.className !== className);
-    count += before - annotations[img.name].length;
+    const removed = before - annotations[img.name].length;
+    if (removed > 0) { count += removed; changed.push(img.name); imageModified[img.name] = true; }
     if (ui.selectedAnnotation && ui.selectedAnnotation.className === className) {
       ui.selectedAnnotation = null;
     }
   }
   if (count > 0) {
-    markModified();
+    pushHistory(changed);
     saveAnnotations();
   }
   return count;
 }
 
-// 批量删除所有标注：scope='all' 所有图片，'current' 当前图片
-export function batchDeleteAll(scope: 'all' | 'current' = 'all'): number {
+// 批量删除所有标注：scope='all' 所有图片，'current' 当前图片，'range' 指定区间
+export function batchDeleteAll(scope: BatchScope = 'all', rangeStart = 1, rangeEnd = 0): number {
   let count = 0;
-  const targetImages = scope === 'all' ? images : (ui.currentImageIndex >= 0 ? [images[ui.currentImageIndex]] : []);
+  const targetImages = batchTargets(scope, rangeStart, rangeEnd);
+  for (const img of targetImages) captureUndoBaseline(img.name);
+  const changed: string[] = [];
   for (const img of targetImages) {
     const anns = annotations[img.name];
-    if (anns) count += anns.length;
+    const had = anns ? anns.length : 0;
+    if (had > 0) { count += had; changed.push(img.name); imageModified[img.name] = true; }
     annotations[img.name] = [];
   }
   ui.selectedAnnotation = null;
   if (count > 0) {
-    markModified();
+    pushHistory(changed);
     saveAnnotations();
   }
   return count;
@@ -285,8 +313,10 @@ export function copyToAllSubsequent(): number {
   if (srcAnns.length === 0) return 0;
 
   let totalCopied = 0;
+  const changed: string[] = [];
   for (let i = ui.currentImageIndex + 1; i < images.length; i++) {
     const dstName = images[i].name;
+    captureUndoBaseline(dstName);   // 目标图可能在批量前从未打开过，先补基线
     if (!annotations[dstName]) annotations[dstName] = [];
     const maxId = annotations[dstName].length > 0
       ? Math.max(...annotations[dstName].map(a => a.id)) : -1;
@@ -298,37 +328,53 @@ export function copyToAllSubsequent(): number {
       annotations[dstName].push(copy);
       totalCopied++;
     }
+    changed.push(dstName);
     imageModified[dstName] = true;
   }
   if (totalCopied > 0) {
-    markModified();
+    pushHistory(changed);
     saveAnnotations();
   }
   return totalCopied;
 }
 
-export function pushHistory() {
-  if (ui.currentImageIndex < 0) return;
-  const name = images[ui.currentImageIndex]?.name;
-  if (!name) return;
-  const snapshot = JSON.parse(JSON.stringify(annotations[name] || []));
-  // 分类模式下图上的「标注」永远是空的，唯一会变的是 ui.imageLabels。
-  // 所以快照必须把标签也带上，否则「打标签」这条历史会被下面的去重逻辑
-  // 判成「和上一条一模一样」直接丢掉，Ctrl+Z 就成了空操作。
-  const labels = [...(ui.imageLabels[name] || [])];
+/** 构造某张图的「当前状态」快照（annotations + 分类标签）。
+ *  分类模式下图上的 annotations 永远是空的，唯一会变的是 ui.imageLabels，
+ *  所以快照必须把标签也带上，否则「打标签」这条历史会被去重逻辑判成空操作。 */
+function snapshotImage(name: string): ImageSnapshot {
+  return {
+    imageName: name,
+    annotations: JSON.parse(JSON.stringify(annotations[name] || [])),
+    labels: [...(ui.imageLabels[name] || [])],
+  };
+}
 
-  // 去重：状态没变就不产生历史点。
-  // 否则「鼠标点一下选中标注」「按下手柄但没拖动」都会 push 一条与上一条完全相同的快照，
-  // 用户按 Ctrl+Z 看起来就像没反应（得连按好几次才真正退一格）。
+/** 记一条历史（存的是「操作之后」的快照）。
+ *
+ *  - `names` 缺省 = 只记当前图（单图操作的老行为，全站数百处 `pushHistory()` 不用改）；
+ *  - 传 `names` = 记这一批图（批量操作：一次改了 N 张，整体进一条，undo/redo 才能整体还原）。
+ *
+ *  去重：状态没变就不产生历史点 —— 否则「点一下选中标注」「按手柄没拖动」都会 push
+ *  一条与上一条相同的快照，用户按 Ctrl+Z 像没反应（得连按几次才真正退一格）。
+ */
+export function pushHistory(names?: string[]) {
+  let targetNames = names;
+  if (!targetNames) {
+    if (ui.currentImageIndex < 0) return;
+    const name = images[ui.currentImageIndex]?.name;
+    if (!name) return;
+    targetNames = [name];
+  }
+  if (targetNames.length === 0) return;
+  const changes = targetNames.map(snapshotImage);
+
   const last = ui.history[ui.historyIndex];
-  if (last && last.imageName === name
-      && JSON.stringify(last.annotations) === JSON.stringify(snapshot)
-      && JSON.stringify(last.labels || []) === JSON.stringify(labels)) {
+  if (last && JSON.stringify(last.changes) === JSON.stringify(changes)) {
     return;
   }
 
   ui.history = ui.history.slice(0, ui.historyIndex + 1);
-  ui.history.push({ imageName: name, annotations: snapshot, labels });
+  ui.history.push({ changes });
   if (ui.history.length > maxHistory) ui.history.shift();
   ui.historyIndex = ui.history.length - 1;
 }

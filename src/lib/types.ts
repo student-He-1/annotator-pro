@@ -88,14 +88,22 @@ export interface DragHandle {
   x: number; y: number;
 }
 
-/** 历史记录条目 */
-export interface HistoryEntry {
+/** 一次操作对「某一张图」的快照（annotations + 分类标签）。
+ *  撤销/重做的最小单位从「单图」升级成「多图」之后，一条历史由若干张这样的快照组成。 */
+export interface ImageSnapshot {
   imageName: string;
   annotations: Annotation[];
-  /** 该图片的分类标签（分类模式专用）。
-   *  以前只存 annotations，于是分类模式下 Ctrl+Z 是个「撤了但什么都没变」的空操作。
-   *  旧的历史条目/旧工程里没有这个字段，用 `|| []` 兜底。 */
-  labels?: string[];
+  /** 该图片的分类标签（分类模式专用）。旧数据可能没有，用 `|| []` 兜底。 */
+  labels: string[];
+}
+
+/** 历史记录条目。
+ *  以前是**单图**结构（`{ imageName, annotations, labels }`），于是批量操作
+ *  （批量改类别 / 批量删除 / YOLO·SAM 批量预标注）一次改了 N 张图，
+ *  却只记了当前图那一张 —— 历史从这里开始错位，Ctrl+Z 撤的是别的一张图的上一步。
+ *  现在一条记录可以携带「本次操作涉及的所有图」，undo/redo 整体写回。 */
+export interface HistoryEntry {
+  changes: ImageSnapshot[];
 }
 
 /** 工程文件中的图片条目 */
