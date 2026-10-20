@@ -6,17 +6,21 @@ echo   Annotator Pro Backend Starting...
 echo ========================================
 echo.
 
+REM ===== 请根据你的环境修改以下配置 =====
+set PYTHON_EXE=python
+set SAM3_MODEL_PATH=E:\models\sam3.pt
+set POSE_MODEL_PATH=E:\models\yolov8n-pose.pt
 set TORCH_HOME=E:\TorchHub
-set TORCHINDUCTOR_CACHE_DIR=E:\TorchHub\inductor_cache
-set TRITON_CACHE_DIR=E:\TorchHub\triton_cache
+REM =======================================
+
+set TORCHINDUCTOR_CACHE_DIR=%TORCH_HOME%\inductor_cache
+set TRITON_CACHE_DIR=%TORCH_HOME%\triton_cache
 set PYTHONIOENCODING=utf-8
-set SAM3_MODEL_PATH=E:\Doubao download\sam3.pt
-set POSE_MODEL_PATH=E:\Doubao download\yolov8n-pose.pt
 
 echo [1/2] Loading SAM3 model (10-30s, do not close)...
 echo.
 
-"D:\79458\Documents\anaconda3\envs\deeplearning\python.exe" "%~dp0src-tauri\sidecar\sam_server.py"
+"%PYTHON_EXE%" "%~dp0src-tauri\sidecar\sam_server.py"
 
 echo.
 echo Backend exited. Press any key to close...
