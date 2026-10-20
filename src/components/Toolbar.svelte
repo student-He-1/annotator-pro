@@ -51,6 +51,9 @@
     { id: 'seg_select', icon: 'pointer', label: '选择区域 (V)', key: 'V' },
     { id: 'seg_text', icon: 'sam', label: '文本提示 (T)', key: 'T' },
     { id: 'seg_point', icon: 'keypoint', label: '点提示 (B)', key: 'B' },
+    { id: 'seg_brush', icon: 'wand', label: '画笔 (W)', key: 'W' },
+    { id: 'seg_eraser', icon: 'trash', label: '橡皮 (E)', key: 'E' },
+    { id: 'seg_refine', icon: 'sparkles', label: '负点修正 (R)', key: 'R' },
   ];
 
   /** 工具栏提示里的键位跟着设置里改过的快捷键走。

@@ -216,19 +216,28 @@ export async function pcsWithMask(
   return { instances, map, width: img.naturalWidth, height: img.naturalHeight };
 }
 
-/** 点提示 → 单个实例掩膜（值 1） */
-export async function predictWithMask(
+export interface SegPoint { x: number; y: number; label: 0 | 1 }
+
+/** 多点多标签提示 → 单个实例掩膜（值 1）。
+ *  负点修正就是靠它：正点=要保留，负点=要排除；后端 `predict_inst` 的 point_coords/labels
+ *  本来就吃多组点，所以这里只是把单点扩展成点列表（老调用方走 predictWithMask 不受影响）。 */
+export async function predictWithPoints(
   img: HTMLImageElement,
-  x: number,
-  y: number,
-  label: 0 | 1 = 1
+  points: SegPoint[]
 ): Promise<{ map: Uint8Array | null; score: number; polygon: { x: number; y: number }[] }> {
   if (!serverReady) throw new Error('SAM 后端未连接：先点「连接后端」');
+  if (points.length === 0) return { map: null, score: 0, polygon: [] };
   const imageId = await ensureEmbedded(img);
   const resp = await fetch(`${baseUrl}/predict`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image_id: imageId, x, y, label, multimask: true, return_mask: true }),
+    body: JSON.stringify({
+      image_id: imageId,
+      points: points.map(p => [p.x, p.y]),
+      labels: points.map(p => p.label),
+      multimask: true,
+      return_mask: true,
+    }),
   });
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
@@ -241,4 +250,14 @@ export async function predictWithMask(
     map = await decodePngToMap(data.mask_png, img.naturalWidth, img.naturalHeight, true);
   }
   return { map, score: data.score || 0, polygon };
+}
+
+/** 点提示 → 单个实例掩膜（值 1） */
+export async function predictWithMask(
+  img: HTMLImageElement,
+  x: number,
+  y: number,
+  label: 0 | 1 = 1
+): Promise<{ map: Uint8Array | null; score: number; polygon: { x: number; y: number }[] }> {
+  return predictWithPoints(img, [{ x, y, label }]);
 }

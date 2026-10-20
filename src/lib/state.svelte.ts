@@ -123,6 +123,13 @@ export const ui = $state({
   segSweepTotal: 0,
   segSweepCurrent: '',
   segSweepResults: [] as SegSweepResult[],
+  // ---- 修正工具（P1c-2）----
+  /** 画笔/橡皮的笔刷直径（图像像素，不是屏幕像素） */
+  segBrushSize: 24,
+  /** 负点修正：为「当前选中区域」累积的提示点（正点=保留，负点=排除） */
+  segRefinePoints: [] as { x: number; y: number; label: 0 | 1 }[],
+  /** 清理孤岛：小于这个像素数的连通块会被删掉 */
+  segIslandMinPx: 64,
   shortcuts: {
     select: 'v', rect: 'r', polygon: 'p', rotated: 'o', keypoint: 'k',
     sam: 'm', magicwand: 'w',

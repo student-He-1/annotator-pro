@@ -3,7 +3,7 @@ import {
   ui, getCurrentAnnotations, getClassColor,
 } from '../state.svelte';
 import { getSkeleton, skeletonFor } from '../skeletons';
-import { getSegOverlay } from '../segmentation/store.svelte';
+import { getSegOverlay, getRefinePoints } from '../segmentation/store.svelte';
 import type { Annotation, Point, DragHandle, RectAnnotation, RotatedAnnotation, KeypointAnnotation } from '../types';
 
 let ctx: CanvasRenderingContext2D;
@@ -178,6 +178,21 @@ export function render() {
       ctx.save();
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(segOverlay, -hw, -hh, imgW, imgH);
+      ctx.restore();
+    }
+    // 负点修正累积的提示点：白=正点（保留），红=负点（排除）
+    const refinePts = getRefinePoints();
+    if (refinePts.length > 0) {
+      ctx.save();
+      refinePts.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x - hw, p.y - hh, 5 / ui.zoom, 0, Math.PI * 2);
+        ctx.fillStyle = p.label ? '#ffffff' : '#f85149';
+        ctx.fill();
+        ctx.lineWidth = 1.5 / ui.zoom;
+        ctx.strokeStyle = '#000000';
+        ctx.stroke();
+      });
       ctx.restore();
     }
   }

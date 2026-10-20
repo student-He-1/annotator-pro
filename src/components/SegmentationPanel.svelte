@@ -12,7 +12,7 @@
     clearImageMask, colorOfSegClass, ensureSegClass, checkSegBackend, runTextPrompt,
     canUndoMask, canRedoMask, undoMask, redoMask, getMaskDirty, getImageMask,
     runClassSweep, cancelClassSweep, toggleSweepClass, selectAllSweepClasses, clearSweepClasses,
-    reviewSweepClass,
+    reviewSweepClass, cleanupSmallIslands, getRefinePoints, clearRefinePoints,
   } from '$lib/segmentation/store.svelte';
   import { SEG_PRESETS } from '$lib/segmentation/presets';
   import { describeMasks, getUnmappedCityscapesClasses, SEG_EXPORT_FORMATS } from '$lib/export/segmentation-export';
@@ -36,9 +36,9 @@
   const selected = $derived(ui.segSelectedRegion);
   /** Cityscapes 语义图导出前要提醒的「映射不到」类别（它们会被写成 void=255） */
   const unmapped = $derived((ui.maskRev, curName ? getUnmappedCityscapesClasses(getImageMask(curName)) : []));
+  const refineCount = $derived((ui.maskRev, getRefinePoints().length));
 
-  async function startSweep() {
-    if (busy) return;
+  async function startSweep() {    if (busy) return;
     busy = true;
     try {
       // 传 render 进去：扫描是逐词合并的，每合并完一个词就重画一次，边扫边能看到掩膜
@@ -103,7 +103,9 @@
   }
 
   function doRegionClick(ordinal: number) {
-    selectRegion(ui.segSelectedRegion === ordinal ? 0 : ordinal);
+    // 点行永远是「选中」，不做 toggle：toggle 会让人「点一下取消选中」而不自知，
+    // 之后画笔/负点修正就成了「没有目标区域」。取消选中请点画布空白。
+    selectRegion(ordinal);
     render();
   }
 
@@ -129,6 +131,11 @@
     if (regions.length === 0) return;
     if (!confirm(`确定清除当前图片的 ${regions.length} 个区域吗？可用撤销恢复。`)) return;
     clearImageMask();
+    render();
+  }
+
+  function doCleanupIslands() {
+    cleanupSmallIslands(Number(ui.segIslandMinPx) || 64);
     render();
   }
 
@@ -305,6 +312,36 @@
       {#if getMaskDirty(curName)}
         <p class="muted tiny warn-text">有未保存的掩膜改动（停手 0.5 秒会自动保存）</p>
       {/if}
+    </div>
+
+    <!-- 修正工具（P1c-2） -->
+    <div class="section">
+      <h4>修正</h4>
+      <div class="row-line">
+        <label class="tiny">笔刷</label>
+        <input type="range" min="2" max="120" step="1" bind:value={ui.segBrushSize} />
+        <span class="tiny">{ui.segBrushSize}px</span>
+      </div>
+      <p class="muted tiny">
+        画笔(W) 补漏、橡皮(E) 削边。画笔默认画进「选中的区域」；没选中就用当前激活类别最近的那个区域，
+        再没有就新建一个。一笔 = 一个 Ctrl+Z。
+      </p>
+      <div class="row-line">
+        <label class="tiny">清理孤岛 &lt;</label>
+        <input class="num-input" type="number" min="1" max="100000" bind:value={ui.segIslandMinPx} />
+        <span class="tiny">px</span>
+        <button class="btn-mini" onclick={doCleanupIslands} disabled={regions.length === 0}>清理</button>
+      </div>
+      <p class="muted tiny">
+        负点修正(R)：先选中区域，点击=保留、Shift+点击=排除；提示点会显示在画布上（白点/红点）。
+      </p>
+      {#if refineCount > 0}
+        <div class="row-line">
+          <span class="tiny">提示点 {refineCount} 个</span>
+          <button class="btn-mini" onclick={() => { clearRefinePoints(); render(); }}>清除点</button>
+        </div>
+      {/if}
+      <p class="muted tiny">选择(V) 下 Shift+点另一个区域 = 合并进当前选中的区域。</p>
     </div>
 
     <!-- 显示 -->

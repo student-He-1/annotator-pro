@@ -77,11 +77,15 @@ class EmbedResponse(BaseModel):
 
 class PredictRequest(BaseModel):
     image_id: str
-    x: float
-    y: float
+    x: float = 0.0
+    y: float = 0.0
     label: int = 1  # 1=正点(前景), 0=负点(背景)
     multimask: bool = True
     return_mask: bool = False  # 可选：同时返回像素级掩膜（默认关，老前端行为不变）
+    # 可选：多点多标签提示（负点修正用）。给了 points 就忽略 x/y/label ——
+    # 老前端只传单点，行为与以前完全一致。
+    points: Optional[list[list[float]]] = None
+    labels: Optional[list[int]] = None
 
 
 class PredictResponse(BaseModel):
@@ -198,11 +202,22 @@ def predict(req: PredictRequest):
         raise HTTPException(404, "Image not found, call /embed first")
 
     t0 = time.time()
+    # 多点多标签（负点修正）优先；没给就退回单点，老调用方行为不变
+    if req.points:
+        coords = np.array([[float(p[0]), float(p[1])] for p in req.points], dtype=np.float32)
+        if req.labels and len(req.labels) == len(req.points):
+            point_labels = np.array([int(v) for v in req.labels], dtype=np.int32)
+        else:
+            point_labels = np.ones(len(req.points), dtype=np.int32)
+    else:
+        coords = np.array([[req.x, req.y]], dtype=np.float32)
+        point_labels = np.array([req.label], dtype=np.int32)
+
     with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         masks, scores, _ = model.predict_inst(
             inference_state=state,
-            point_coords=np.array([[req.x, req.y]]),
-            point_labels=np.array([req.label]),
+            point_coords=coords,
+            point_labels=point_labels,
             multimask_output=req.multimask
         )
     elapsed = (time.time() - t0) * 1000

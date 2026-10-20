@@ -13,7 +13,7 @@ import {
   encodeRuns, decodeRuns, removeOrdinalInPlace, parseRunString, runStringOf,
 } from './rle';
 import { buildOverlayCanvas } from './overlay';
-import { pcsWithMask, predictWithMask, clearSegSamCache, connectSegBackend, isSegMaskSupported, isSegServerReady } from './samMask';
+import { pcsWithMask, predictWithPoints, clearSegSamCache, connectSegBackend, isSegMaskSupported, isSegServerReady } from './samMask';
 import type { ImageMask, MaskCandidate, MaskRegion, MaskRegionKind, ProjectMask, SegmentationSettings } from './types';
 
 const MAX_MASK_HISTORY = 30;
@@ -352,7 +352,7 @@ export async function runPointPrompt(x: number, y: number, label: 0 | 1 = 1): Pr
       ui.segMaskSupported = st.maskSupported;
       if (!st.ready) { showToast(st.error || '后端未就绪', 'error'); return; }
     }
-    const res = await predictWithMask(img, Math.round(x), Math.round(y), label);
+    const res = await predictWithPoints(img, [{ x: Math.round(x), y: Math.round(y), label }]);
     if (!res.map) {
       showToast('后端没有返回掩膜（旧后端），点提示暂时不可用', 'error');
       return;
@@ -641,12 +641,14 @@ export function clearImageMask() {
 // ============================================================
 export function selectRegion(ordinal: number) {
   ui.segSelectedRegion = ordinal;
+  onRegionSelected();   // 换区域 = 换修正对象，提示点清零
   bump();
 }
 
 export function clearRegionSelection() {
   if (!ui.segSelectedRegion) return;
   ui.segSelectedRegion = 0;
+  onRegionSelected();
   bump();
 }
 
@@ -1012,6 +1014,310 @@ export function getMaskForExport(name: string): { mask: ImageMask; map: Uint8Arr
   if (!map) return null;
   return { mask, map };
 }
+
+// ============================================================
+// 修正工具（P1c-2）：画笔 / 橡皮 / 负点修正 / 孤岛清理 / 合并
+// ============================================================
+// 一律遵守：改之前 `checkpoint()`（这样 Ctrl+Z 一步退回一次编辑），改完
+// `finalizeMaskEdit()` 重算面积/包围盒并顺手把「被搓成 0 像素的区域」删掉。
+
+interface AllStats {
+  areas: Uint32Array;
+  minX: Int32Array; minY: Int32Array; maxX: Int32Array; maxY: Int32Array;
+}
+
+/** 一遍扫完整张图，得到每个 ordinal 的面积与包围盒 */
+function statsOfAll(map: Uint8Array, w: number, h: number): AllStats {
+  const areas = new Uint32Array(256);
+  const minX = new Int32Array(256).fill(w);
+  const minY = new Int32Array(256).fill(h);
+  const maxX = new Int32Array(256).fill(-1);
+  const maxY = new Int32Array(256).fill(-1);
+  for (let i = 0; i < map.length; i++) {
+    const v = map[i];
+    if (!v) continue;
+    areas[v]++;
+    const y = (i / w) | 0;
+    const x = i - y * w;
+    if (x < minX[v]) minX[v] = x;
+    if (x > maxX[v]) maxX[v] = x;
+    if (y < minY[v]) minY[v] = y;
+    if (y > maxY[v]) maxY[v] = y;
+  }
+  return { areas, minX, minY, maxX, maxY };
+}
+
+function boxFromStats(st: AllStats, ordinal: number) {
+  const o = ordinal & 255;
+  if (!st.areas[o]) return undefined;
+  return { x1: st.minX[o], y1: st.minY[o], x2: st.maxX[o] + 1, y2: st.maxY[o] + 1 };
+}
+
+/** 编辑收尾：重算统计、删掉空区域并重新编号（保证 ordinal 与 regions 下标一一对应）、落盘 */
+function finalizeMaskEdit(name: string) {
+  const mask = maskMap.get(name);
+  const map = getDecodedFor(name);
+  if (!mask || !map) return;
+  const w = mask.width, h = mask.height;
+  let st = statsOfAll(map, w, h);
+  let regions = mask.regions;
+
+  const anyEmpty = regions.some(r => st.areas[r.ordinal & 255] === 0);
+  if (anyEmpty) {
+    const remap = new Uint16Array(256);
+    const kept: typeof regions = [];
+    for (const r of regions) {
+      if (st.areas[r.ordinal & 255] > 0) {
+        const no = kept.length + 1;
+        remap[r.ordinal & 255] = no;
+        kept.push({ ...r, ordinal: no });
+      }
+    }
+    for (let i = 0; i < map.length; i++) {
+      const v = map[i];
+      if (v) map[i] = remap[v] || 0;
+    }
+    regions = kept;
+    if (ui.segSelectedRegion) ui.segSelectedRegion = remap[ui.segSelectedRegion & 255] || 0;
+    st = statsOfAll(map, w, h);
+  }
+
+  regions = regions.map(r => {
+    const o = r.ordinal & 255;
+    return { ...r, area: st.areas[o], box: boxFromStats(st, r.ordinal) };
+  });
+  storeMask(name, { width: w, height: h, counts: [], ids: [], regions }, map);
+}
+
+// ---- 画笔 / 橡皮 ----
+let strokeName = '';
+let strokeCheckpointed = false;
+
+/** 开始一笔（mousedown）。返回 false 表示这张图还没有掩膜，没什么可画的 */
+export function beginMaskStroke(): boolean {
+  const name = currentName();
+  if (!name) return false;
+  const mask = maskMap.get(name);
+  if (!mask) { showToast('这张图还没有掩膜：先扫描/点提示出一个区域，再用画笔补', 'info'); return false; }
+  strokeName = name;
+  strokeCheckpointed = false;
+  return true;
+}
+
+/** 笔刷要画到哪个 ordinal：选中区域 > 同类别最近区域 > 0（没有） */
+export function brushTargetOrdinal(): number {
+  const name = currentName();
+  const mask = maskMap.get(name);
+  if (!mask) return 0;
+  if (ui.segSelectedRegion) {
+    const r = mask.regions.find(x => x.ordinal === ui.segSelectedRegion);
+    if (r) return r.ordinal;
+  }
+  const cls = ui.segActiveClass;
+  const same = [...mask.regions].reverse().find(r => r.className === cls);
+  return same ? same.ordinal : 0;
+}
+
+/** 没有目标区域时新建一个（用当前激活类别），这样不选区域也能直接补 */
+export function ensureBrushRegion(): number {
+  const name = currentName();
+  const mask = maskMap.get(name);
+  if (!mask) return 0;
+  const existing = brushTargetOrdinal();
+  if (existing) return existing;
+  if (mask.regions.length >= 255) { showToast('单图最多 255 个区域', 'error'); return 0; }
+  checkpoint(name);
+  const ordinal = mask.regions.length + 1;
+  const cls = ensureSegClass(ui.segActiveClass || classFallback());
+  const regions = [
+    ...mask.regions,
+    { ordinal, className: cls, kind: inferKind(cls, 0), score: 0, source: 'brush' as const, area: 0 },
+  ];
+  storeMask(name, { width: mask.width, height: mask.height, counts: [], ids: [], regions }, getDecodedFor(name) || new Uint8Array(mask.width * mask.height));
+  ui.segSelectedRegion = ordinal;
+  return ordinal;
+}
+
+/** 在图像坐标 (x,y) 画一个半径 r 的圆：ordinal=0 就是橡皮 */
+export function paintAt(x: number, y: number, radius: number, ordinal: number) {
+  const name = strokeName || currentName();
+  if (!name) return;
+  const mask = maskMap.get(name);
+  if (!mask) return;
+  const map = getDecodedFor(name);
+  if (!map) return;
+  if (!strokeCheckpointed) {
+    checkpoint(name);
+    strokeCheckpointed = true;
+  }
+  const w = mask.width, h = mask.height;
+  const r = Math.max(1, Math.round(radius));
+  const cx = Math.round(x), cy = Math.round(y);
+  const r2 = r * r;
+  const y0 = Math.max(0, cy - r), y1 = Math.min(h - 1, cy + r);
+  for (let yy = y0; yy <= y1; yy++) {
+    const dy = yy - cy;
+    const span = Math.floor(Math.sqrt(Math.max(0, r2 - dy * dy)));
+    const x0 = Math.max(0, cx - span), x1 = Math.min(w - 1, cx + span);
+    const row = yy * w;
+    for (let xx = x0; xx <= x1; xx++) map[row + xx] = ordinal;
+  }
+  bump();   // 只 bump（overlay 用解码图重建），编码留到 endMaskStroke
+}
+
+export function endMaskStroke() {
+  const name = strokeName || currentName();
+  if (!name) return;
+  strokeName = '';
+  strokeCheckpointed = false;
+  finalizeMaskEdit(name);
+}
+
+// ---- 负点修正 ----
+export function getRefinePoints() {
+  return ui.segRefinePoints;
+}
+
+export function clearRefinePoints() {
+  ui.segRefinePoints = [];
+  bump();
+}
+
+export function onRegionSelected() {
+  // 换区域 = 换修正对象，累加的提示点要清掉，否则会把上一个区域的点带过来
+  ui.segRefinePoints = [];
+}
+
+/** 给「当前选中区域」加一个提示点并立刻重新分割（正点=保留，负点=排除）。
+ *  每一次点击都是一步可撤销的编辑（Ctrl+Z）。 */
+export async function refineSelectedWithPoint(x: number, y: number, label: 0 | 1): Promise<void> {
+  const name = currentName();
+  const img = ui.currentImage;
+  const mask = maskMap.get(name);
+  if (!name || !img || !mask) { showToast('请先选择一张有掩膜的图片', 'error'); return; }
+  const ordinal = ui.segSelectedRegion;
+  if (!ordinal || !mask.regions.some(r => r.ordinal === ordinal)) {
+    showToast('先在区域列表里点一个区域，再点提示修正', 'error');
+    return;
+  }
+  ui.segPromptRunning = true;
+  const points = [...ui.segRefinePoints, { x, y, label }];
+  try {
+    if (!isSegServerReady() || !isSegMaskSupported()) {
+      const st = await connectSegBackend(true);
+      ui.segBackendReady = st.ready;
+      ui.segMaskSupported = st.maskSupported;
+      if (!st.ready) { showToast(st.error || '后端未就绪', 'error'); return; }
+    }
+    const res = await predictWithPoints(img, points);
+    if (!res.map) { showToast('后端没有返回掩膜', 'error'); return; }
+    let area = 0;
+    for (let i = 0; i < res.map.length; i++) if (res.map[i]) area++;
+    if (area === 0) {
+      showToast('这次修正把区域清空了，已忽略（先加一个正点试试）', 'error');
+      return;
+    }
+    const map = getDecodedFor(name);
+    if (!map) return;
+    checkpoint(name);
+    for (let i = 0; i < map.length; i++) if (map[i] === ordinal) map[i] = 0;
+    for (let i = 0; i < res.map.length; i++) if (res.map[i]) map[i] = ordinal;
+    ui.segRefinePoints = points;
+    finalizeMaskEdit(name);
+    bump();
+    showToast(`已修正：${area.toLocaleString()} px · ${points.length} 个提示点（Ctrl+Z 可撤销这一次）`, 'success');
+  } catch (e: any) {
+    showToast('修正失败：' + (e?.message || e), 'error');
+  } finally {
+    ui.segPromptRunning = false;
+  }
+}
+
+// ---- 孤岛清理 ----
+/** 把每个区域里「小于 minPx 的孤立连通块」删掉（始终保留最大块，避免把整块删没） */
+export function cleanupSmallIslands(minPx?: number) {
+  const name = currentName();
+  const mask = maskMap.get(name);
+  const map = getDecodedFor(name);
+  if (!name || !mask || !map) { showToast('这张图还没有掩膜', 'info'); return; }
+  const w = mask.width, h = mask.height;
+  const threshold = Math.max(1, Math.round(minPx ?? ui.segIslandMinPx));
+
+  // 先算「哪些像素属于小连通块」，确认真的有得删再 checkpoint（否则撤销会像没反应）
+  const compId = new Int32Array(w * h).fill(-1);
+  const sizes: number[] = [];
+  const biggestOf = new Map<number, number>();   // ordinal → 最大块 id
+  let nextId = 0;
+  const stack: number[] = [];
+  for (let i = 0; i < map.length; i++) {
+    if (!map[i] || compId[i] >= 0) continue;
+    const o = map[i];
+    const id = nextId++;
+    let size = 0;
+    let biggest = true;
+    compId[i] = id;
+    stack.push(i);
+    while (stack.length > 0) {
+      const p = stack.pop()!;
+      size++;
+      const y = (p / w) | 0;
+      const x = p - y * w;
+      if (x > 0) { const q = p - 1; if (map[q] === o && compId[q] < 0) { compId[q] = id; stack.push(q); } }
+      if (x < w - 1) { const q = p + 1; if (map[q] === o && compId[q] < 0) { compId[q] = id; stack.push(q); } }
+      if (y > 0) { const q = p - w; if (map[q] === o && compId[q] < 0) { compId[q] = id; stack.push(q); } }
+      if (y < h - 1) { const q = p + w; if (map[q] === o && compId[q] < 0) { compId[q] = id; stack.push(q); } }
+    }
+    sizes[id] = size;
+    const prev = biggestOf.get(o) ?? -1;
+    if (prev < 0 || size > sizes[prev]) biggestOf.set(o, id);
+    biggest = false;
+  }
+  const biggestIds = new Set<number>(biggestOf.values());
+  const toClear: number[] = [];
+  for (let i = 0; i < map.length; i++) {
+    const id = compId[i];
+    if (id < 0) continue;
+    if (biggestIds.has(id)) continue;
+    if (sizes[id] < threshold) toClear.push(i);
+  }
+  if (toClear.length === 0) {
+    showToast(`没有小于 ${threshold} px 的孤立小块`, 'info');
+    return;
+  }
+  checkpoint(name);
+  for (const i of toClear) map[i] = 0;
+  finalizeMaskEdit(name);
+  bump();
+  showToast(`清掉了 ${toClear.length.toLocaleString()} px 的孤立小块（Ctrl+Z 可撤销）`, 'success');
+}
+
+// ---- 合并区域 ----
+/** 把 from 区域并进 to 区域（类别用 to 的） */
+export function mergeRegionInto(from: number, to: number) {
+  if (!from || !to || from === to) return;
+  const name = currentName();
+  const mask = maskMap.get(name);
+  const map = getDecodedFor(name);
+  if (!name || !mask || !map) return;
+  if (!mask.regions.some(r => r.ordinal === from) || !mask.regions.some(r => r.ordinal === to)) return;
+
+  checkpoint(name);
+  for (let i = 0; i < map.length; i++) if (map[i] === from) map[i] = to;
+  const regions = mask.regions
+    .filter(r => r.ordinal !== from)
+    .map(r => ({ ...r, ordinal: r.ordinal > from ? r.ordinal - 1 : r.ordinal }));
+  for (let i = 0; i < map.length; i++) {
+    const v = map[i];
+    if (v && v > from) map[i] = v - 1;
+  }
+  const newTo = to > from ? to - 1 : to;
+  storeMask(name, { width: mask.width, height: mask.height, counts: [], ids: [], regions }, map);
+  ui.segSelectedRegion = newTo;
+  finalizeMaskEdit(name);
+  bump();
+  showToast('已合并两个区域（Ctrl+Z 可撤销）', 'success');
+}
+
 
 // ============================================================
 // 本地缓存（复用三种模式共用的保存链路）

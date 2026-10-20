@@ -23,6 +23,8 @@
   import {
     runPointPrompt, hitTestRegion, selectRegion, clearRegionSelection, deleteSelectedRegion,
     undoMask, redoMask, onImageSwitched, clearCandidates,
+    beginMaskStroke, paintAt, endMaskStroke, ensureBrushRegion, brushTargetOrdinal,
+    refineSelectedWithPoint, mergeRegionInto, clearRefinePoints,
   } from '$lib/segmentation/store.svelte';
 
   let canvasEl: HTMLCanvasElement;
@@ -365,6 +367,12 @@
   // ============================================================
   // 图像分割模式（第三个模式）的交互
   // ============================================================
+  // 画笔/橡皮的一笔画布状态（不进 $state：它们只在事件处理里用，不需要触发重渲染）
+  let segDrawing = false;
+  let segPaintOrdinal = 0;
+  let segLastPt: { x: number; y: number } | null = null;
+  let segLastRenderAt = 0;
+
   /** 分割模式的 mousedown。
    *  平移/缩放（中键、Alt+拖、滚轮）在上面的公共分支里已经处理过，这里只管区域交互。 */
   function segMouseDown(imgPos: { x: number; y: number }, e: MouseEvent) {
@@ -373,10 +381,66 @@
       void runPointPrompt(imgPos.x, imgPos.y, e.shiftKey ? 0 : 1);
       return;
     }
-    // 其余工具：点中哪个区域就选中哪个（查表，不做几何判断），点空白取消选中
+    if (ui.currentTool === 'seg_refine') {
+      // 负点修正：正点=保留、Shift=排除；每次点击都是一步可撤销的编辑
+      void refineSelectedWithPoint(imgPos.x, imgPos.y, e.shiftKey ? 0 : 1);
+      return;
+    }
+    if (ui.currentTool === 'seg_brush' || ui.currentTool === 'seg_eraser') {
+      if (!beginMaskStroke()) return;
+      const isErase = ui.currentTool === 'seg_eraser';
+      const ordinal = isErase ? 0 : (brushTargetOrdinal() || ensureBrushRegion());
+      if (!isErase && !ordinal) return;
+      segDrawing = true;
+      segPaintOrdinal = ordinal;
+      segLastPt = { x: imgPos.x, y: imgPos.y };
+      paintAt(imgPos.x, imgPos.y, ui.segBrushSize / 2, ordinal);
+      render();
+      return;
+    }
+    // 其余工具（选择）：点中哪个区域就选中哪个（查表，不做几何判断），点空白取消选中；
+    // Shift+点另一个区域 = 把它并进当前选中的区域（同类合并）
     const ord = hitTestRegion(imgPos.x, imgPos.y);
-    if (ord) selectRegion(ord); else clearRegionSelection();
+    if (ord) {
+      if (e.shiftKey && ui.segSelectedRegion && ord !== ui.segSelectedRegion) {
+        mergeRegionInto(ord, ui.segSelectedRegion);
+        render();
+        return;
+      }
+      selectRegion(ord);
+    } else {
+      clearRegionSelection();
+    }
     render();
+  }
+
+  /** 画笔拖动：在上一点和当前点之间补几笔，避免快速拖动出现断点 */
+  function segPaintDrag(imgPos: { x: number; y: number }) {
+    if (!segDrawing || !segLastPt) return;
+    const r = Math.max(1, ui.segBrushSize / 2);
+    const dx = imgPos.x - segLastPt.x;
+    const dy = imgPos.y - segLastPt.y;
+    const dist = Math.hypot(dx, dy);
+    const steps = Math.max(1, Math.ceil(dist / Math.max(1, r / 2)));
+    for (let i = 1; i <= steps; i++) {
+      paintAt(segLastPt.x + dx * i / steps, segLastPt.y + dy * i / steps, r, segPaintOrdinal);
+    }
+    segLastPt = { x: imgPos.x, y: imgPos.y };
+    // overlay 重建是 2M 像素级的开销，鼠标事件远快于它 → 限速到 ~25fps，手感仍然连续
+    const now = performance.now();
+    if (now - segLastRenderAt > 40) {
+      segLastRenderAt = now;
+      render();
+    }
+  }
+
+  function segMouseUp() {
+    if (segDrawing) {
+      segDrawing = false;
+      segLastPt = null;
+      endMaskStroke();   // 一笔结束才重新做行程编码 + 置脏
+      render();
+    }
   }
 
   /** 分割模式的键盘。检测模式的撤销栈、Delete、工具键都在另一条分支里，互不影响。
@@ -416,6 +480,7 @@
     }
     if (e.key === 'Escape') {
       clearCandidates();
+      clearRefinePoints();
       clearRegionSelection();
       setTool('seg_select');
       render();
@@ -426,6 +491,9 @@
     if (key === 'v') { setTool('seg_select'); return; }
     if (key === 't') { setTool('seg_text'); return; }
     if (key === 'b') { setTool('seg_point'); return; }
+    if (key === 'w') { setTool('seg_brush'); return; }
+    if (key === 'e') { setTool('seg_eraser'); return; }
+    if (key === 'r') { setTool('seg_refine'); return; }
   }
 
   function handleMouseMove(e: MouseEvent) {
@@ -449,8 +517,11 @@
     ui.mouseImgY = imgPos.y;
     ui.mouseOverCanvas = true;
 
-    // 分割模式：不做 hover 预览/拖框，鼠标移动只更新状态栏坐标
-    if (ui.workMode === 'segmentation') return;
+    // 分割模式：画笔拖动继续画；其余工具只更新状态栏坐标
+    if (ui.workMode === 'segmentation') {
+      segPaintDrag(imgPos);
+      return;
+    }
 
     // SAM 工具：拖拽中更新框选可视化
     if (samStart) {
@@ -526,8 +597,8 @@
   function handleMouseUp(e: MouseEvent) {
     if (isPanning) { isPanning = false; return; }
 
-    // 分割模式：没有拖拽手势要收尾（点提示是异步的，不在这里等）
-    if (ui.workMode === 'segmentation') return;
+    // 分割模式：收尾画笔这一笔（点提示/修正是异步的，不在这里等）
+    if (ui.workMode === 'segmentation') { segMouseUp(); return; }
 
     // SAM 工具：判断点击还是拖拽，运行分割
     if (samStart && ui.currentTool === 'sam') {
