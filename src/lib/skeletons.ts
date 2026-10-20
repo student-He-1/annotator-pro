@@ -9,12 +9,18 @@ export interface SkeletonTemplate {
   skeleton: [number, number][];
   /** 关键点颜色（可选，按索引） */
   colors?: string[];
+  /** 导出时用的类别名（英文）。
+   *  关键点标注的 className 在语义上其实是「骨架类型」，不是目标类别 ——
+   *  导出 COCO / LabelMe 时应该用它，而不是当前激活的类别（以前会导出成
+   *  「person」这种靠运气对上的名字，或者干脆变成用户随手选的类别）。 */
+  exportName?: string;
 }
 
 /** COCO 人体 17 关键点 */
 const COCO_BODY: SkeletonTemplate = {
   id: 'coco_body',
   name: 'COCO 人体 (17点)',
+  exportName: 'person',
   keypoints: [
     'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
     'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
@@ -39,6 +45,7 @@ const COCO_BODY: SkeletonTemplate = {
 const FACE_68: SkeletonTemplate = {
   id: 'face_68',
   name: '面部 (68点)',
+  exportName: 'face',
   keypoints: Array.from({ length: 68 }, (_, i) => `pt_${i + 1}`),
   skeleton: [
     // 脸型轮廓 0-16
@@ -67,6 +74,7 @@ const FACE_68: SkeletonTemplate = {
 const HAND_21: SkeletonTemplate = {
   id: 'hand_21',
   name: '手部 (21点)',
+  exportName: 'hand',
   keypoints: [
     'wrist',
     'thumb_cmc', 'thumb_mcp', 'thumb_ip', 'thumb_tip',
@@ -124,6 +132,38 @@ export function getAllSkeletons(): SkeletonTemplate[] {
 
 export function getSkeleton(id: string): SkeletonTemplate {
   return getAllSkeletons().find(s => s.id === id) || NONE;
+}
+
+// ============================================================
+// 关键点标注 → 骨架类型解析
+// ============================================================
+// 新的关键点标注会在自己的 `skeletonId` 上记住用的是哪个模板；只有旧数据
+// （没有该字段）才退回到「按点数猜」：17→人体, 68→人脸, 21→手。
+// 渲染、导出、面板显示都走下面这几个函数，避免三处各写一份、各猜各的。
+
+/** 按点数匹配骨架模板（跳过「无骨架」）。 */
+export function skeletonForPointCount(n: number): SkeletonTemplate | undefined {
+  return getAllSkeletons().find(t => t.id !== 'none' && t.keypoints.length === n);
+}
+
+/** 解析一条关键点标注该用哪个骨架模板。
+ *  优先用标注自带的 skeletonId，没有才按点数兜底。 */
+export function skeletonFor(skeletonId: string | undefined, pointCount: number): SkeletonTemplate | undefined {
+  if (skeletonId && skeletonId !== 'none') {
+    const hit = getAllSkeletons().find(s => s.id === skeletonId);
+    if (hit) return hit;
+  }
+  return skeletonForPointCount(pointCount);
+}
+
+/** 导出用的类别名（英文，外部工具认）：person / face / hand / keypoint */
+export function keypointExportName(pointCount: number, skeletonId?: string): string {
+  return skeletonFor(skeletonId, pointCount)?.exportName || 'keypoint';
+}
+
+/** 界面显示用的骨架名（中文）：COCO 人体 (17点) / 面部 (68点) / ... */
+export function keypointDisplayName(pointCount: number, skeletonId?: string): string {
+  return skeletonFor(skeletonId, pointCount)?.name || `${pointCount} 点自由点`;
 }
 
 /** 兼容旧 import */

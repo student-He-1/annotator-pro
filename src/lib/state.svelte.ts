@@ -423,7 +423,7 @@ export function saveAnnotations() {
  */
 export function saveAnnotationsNow(): boolean {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-  const data = { annotations, classes, classColors, theme: ui.theme, imageLabels: ui.imageLabels };
+  const data = { annotations, classes, classColors, theme: ui.theme, imageLabels: ui.imageLabels, skeletonId: ui.skeletonId };
   try {
     localStorage.setItem('annotator_data', JSON.stringify(data));
   } catch (e: any) {
@@ -443,6 +443,8 @@ export function loadSavedData() {
     if (data.classColors) Object.assign(classColors, data.classColors);
     if (data.theme) ui.theme = data.theme;
     if (data.imageLabels) ui.imageLabels = data.imageLabels;
+    // 记住上次选的关键点骨架模板，否则重启后回到「无骨架」，手动打点又要重新选
+    if (data.skeletonId) ui.skeletonId = data.skeletonId;
     // 不恢复图片列表（dataUrl 刷新后失效，留空壳反而导致重新导入逻辑混乱；标注和文件名对应关系已保留，重新导入同名文件夹后自动匹配）
   } catch {}
 }
@@ -484,9 +486,20 @@ const _classCounts = $derived.by(() => {
   const counts: Record<string, number> = {};
   if (ui.currentImageIndex >= 0 && images[ui.currentImageIndex]) {
     const anns = annotations[images[ui.currentImageIndex].name] || [];
-    anns.forEach(a => { counts[a.className] = (counts[a.className] || 0) + 1; });
+    anns.forEach(a => {
+      // 关键点不算「某个类别的目标实例」，不进类别统计。
+      // 以前一个 68 点人脸骨架会被算成 1 个 person，类别列表里凭空多出一个 person。
+      if (a.type === 'keypoint') return;
+      counts[a.className] = (counts[a.className] || 0) + 1;
+    });
   }
   return counts;
+});
+
+/** 当前图片上有几个关键点标注（数骨架，不是数点） */
+const _currentKeypointCount = $derived.by(() => {
+  if (ui.currentImageIndex < 0 || !images[ui.currentImageIndex]) return 0;
+  return (annotations[images[ui.currentImageIndex].name] || []).filter(a => a.type === 'keypoint').length;
 });
 
 /** 分类模式下整个工程打了多少「标签」（不是标注个数） */
@@ -499,6 +512,7 @@ export function getTotalAnnotationCount() { return _totalAnnotationCount; }
 export function getTotalLabelCount() { return _totalLabelCount; }
 export function getCurrentAnnotations() { return _currentAnnotations; }
 export function getClassCounts() { return _classCounts; }
+export function getKeypointCount() { return _currentKeypointCount; }
 
 // ============================================================
 // 按模式取数（分类 / 检测两套统计口径的唯一入口）

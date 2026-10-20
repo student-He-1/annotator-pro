@@ -2,8 +2,8 @@
 import {
   ui, getCurrentAnnotations, getClassColor,
 } from '../state.svelte';
-import { getSkeleton, getAllSkeletons } from '../skeletons';
-import type { Annotation, Point, DragHandle, RectAnnotation, RotatedAnnotation } from '../types';
+import { getSkeleton, skeletonFor } from '../skeletons';
+import type { Annotation, Point, DragHandle, RectAnnotation, RotatedAnnotation, KeypointAnnotation } from '../types';
 
 let ctx: CanvasRenderingContext2D;
 let canvas: HTMLCanvasElement;
@@ -215,7 +215,10 @@ function drawAnnotation(ann: Annotation, isSelected: boolean, isDrawingPreview =
 
   ctx.restore();
 
-  if (!isDrawingPreview) drawLabel(ann, color, hw, hh);
+  // 关键点不画类别角标。
+  // keypoint 的 className 在语义上其实是「骨架类型」（人体/人脸/手部），
+  // 画成「person」小框既没有信息量，又容易被当成一个检测目标。
+  if (!isDrawingPreview && ann.type !== 'keypoint') drawLabel(ann, color, hw, hh);
 }
 
 function drawRect(ann: RectAnnotation, hw: number, hh: number, isSelected: boolean) {
@@ -294,8 +297,9 @@ function getRotatedCorners(ann: RotatedAnnotation): Point[] {
 function drawKeypoints(ann: Annotation, hw: number, hh: number) {
   if (!('points' in ann)) return;
 
-  // Draw skeleton connections first — 按本标注的点数匹配骨架模板，避免全局 skeletonId 导致连线错乱
-  const skel = getAllSkeletons().find(t => t.keypoints.length === ann.points.length) || getSkeleton(ui.skeletonId);
+  // 骨架模板：优先用标注自己记的 skeletonId（手动打点/自定义模板都能对上），
+  // 只有旧数据没有该字段时才按点数兜底。
+  const skel = skeletonFor((ann as KeypointAnnotation).skeletonId, ann.points.length) || getSkeleton(ui.skeletonId);
   if (skel.skeleton.length > 0) {
     ctx.save();
     ctx.strokeStyle = getClassColor(ann.className);

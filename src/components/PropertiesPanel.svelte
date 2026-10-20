@@ -4,8 +4,9 @@
     ui, images, classes, classColors, getClassCounts,
     COLORS, getClassColor, getCurrentAnnotations, selectAnnotation, deleteAnnotation,
     pushHistory, showToast, batchDeleteAll, getActiveClass, setActiveClass, annotations, saveAnnotations,
-    getNextAnnotationId, addAnnotation, markModified,
+    getNextAnnotationId, addAnnotation, markModified, getKeypointCount,
   } from '$lib/state.svelte';
+  import { keypointDisplayName } from '$lib/skeletons';
   import { render } from '$lib/canvas/engine.svelte';
   import type { ExportFormat, Annotation } from '$lib/types';
   import Icon from './Icon.svelte';
@@ -218,6 +219,7 @@
           points: p.keypoints.map(k => ({ x: k.x, y: k.y })),
           className: getActiveClass(),
           id: getNextAnnotationId(),
+          skeletonId: 'coco_body',
         };
         addAnnotation(ann);
         count++;
@@ -253,6 +255,7 @@
           points: f.keypoints,
           className: getActiveClass(),
           id: getNextAnnotationId(),
+          skeletonId: 'face_68',
         };
         addAnnotation(ann);
       }
@@ -344,9 +347,16 @@
           const r = results[i];
           if (r.error) { failed.push({ name, error: r.error }); continue; }
           let id = nextIdFor(name);
+          const skelId = batchModel === 'face' ? 'face_68' : 'coco_body';
           const newAnns: Annotation[] = [];
           for (const o of r.objects) {
-            newAnns.push({ type: 'keypoint', points: o.keypoints.map(k => ({ x: k.x, y: k.y })), className: getActiveClass(), id: id++ });
+            newAnns.push({
+              type: 'keypoint',
+              points: o.keypoints.map(k => ({ x: k.x, y: k.y })),
+              className: getActiveClass(),
+              id: id++,
+              skeletonId: skelId,
+            });
           }
           if (newAnns.length > 0) {
             annotations[name] = [...(annotations[name] || []), ...newAnns];
@@ -548,13 +558,18 @@
         {@const ann = ui.selectedAnnotation}
         <div class="row"><label>{t('id')}</label><span>{ann.id}</span></div>
         <div class="row"><label>{t('type')}</label><span>{ann.type}</span></div>
-        <div class="row"><label>{t('label')}</label>
-          <select value={ann.className} onchange={(e) => props.onChangeClass(ann.id, (e.target as HTMLSelectElement).value)}>
-            {#each classes as c}
-              <option value={c} selected={ann.className === c}>{c}</option>
-            {/each}
-          </select>
-        </div>
+        {#if ann.type === 'keypoint'}
+          <!-- 关键点没有「目标类别」，只有「骨架类型」 -->
+          <div class="row"><label>骨架</label><span>{keypointDisplayName(ann.points.length, ann.skeletonId)}</span></div>
+        {:else}
+          <div class="row"><label>{t('label')}</label>
+            <select value={ann.className} onchange={(e) => props.onChangeClass(ann.id, (e.target as HTMLSelectElement).value)}>
+              {#each classes as c}
+                <option value={c} selected={ann.className === c}>{c}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
         {#if ann.type === 'rect'}
           <div class="row"><label>X</label><span>{ann.x.toFixed(1)}</span></div>
           <div class="row"><label>Y</label><span>{ann.y.toFixed(1)}</span></div>
@@ -593,7 +608,7 @@
             <div class="ann-item" class:active={ui.selectedAnnotation?.id === ann.id}
               onclick={() => selectAnnotation(ann)}>
               <span class="ann-type" style="color:{getClassColor(ann.className)}">{getTypeIcon(ann)}</span>
-              <span class="ann-class">{ann.className}</span>
+              <span class="ann-class">{ann.type === 'keypoint' ? keypointDisplayName(ann.points.length, ann.skeletonId) : ann.className}</span>
               <span class="ann-id">#{ann.id}</span>
               {#if ann.trackId !== undefined}
                 <span class="ann-track" title="追踪ID">T{ann.trackId}</span>
@@ -608,6 +623,9 @@
     <!-- Class List -->
     <div class="section">
       <h4>{t('classList')}</h4>
+      {#if getKeypointCount() > 0}
+        <p class="muted">另有 {getKeypointCount()} 个关键点骨架，不计入下面的类别统计</p>
+      {/if}
       {#each classes as c, i}
         <div class="class-item" class:active={getActiveClass() === c} onclick={() => setActiveClass(c)}>
           <span class="class-color" style="background:{getClassColor(c)}"></span>

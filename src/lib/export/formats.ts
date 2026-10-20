@@ -1,7 +1,53 @@
 /** 导出格式模块 */
 import type { Annotation, ImageInfo, ExportFormat } from '../types';
-import { getAllSkeletons } from '../skeletons';
+import { keypointExportName, skeletonFor } from '../skeletons';
 import { images, annotations, classes, ui } from '../state.svelte';
+
+// ============================================================
+// 关键点在各个格式里的待遇不一样，先集中说明（改之前请看这段）
+// ============================================================
+//  keypoint 的 className 在语义上其实是「骨架类型」（person/face/hand），不是目标类别。
+//  · COCO     ：category_id 是规范必需字段，而且该 category 必须自带 keypoints/skeleton，
+//               否则训练脚本读不出关键点。所以用 keypointExportName() 生成独立的骨架类别。
+//  · LabelMe  ：每个 shape 必须有 label，同样用骨架名，不能空着。
+//  · VOC/YOLO ：这两个格式**没有**关键点概念，关键点会被丢掉 —— 导出前要明确告诉用户。
+//  · CreateML ：同上，只支持矩形框。
+//  · PNG/JPG  ：可视化图，只画骨架和点，不画类别角标。
+//
+//  这个格式矩阵由 formatDropsKeypoints() / formatLabel() 对外提供，供导出前提示用。
+
+/** 该格式会不会丢掉关键点（确认没有关键点概念的那几个） */
+export function formatDropsKeypoints(format: ExportFormat): boolean {
+  return format === 'voc' || format === 'yolo' || format === 'createml';
+}
+
+/** 导出格式的中文名，用于提示文案 */
+export function formatLabel(format: ExportFormat): string {
+  switch (format) {
+    case 'voc': return 'PASCAL VOC XML';
+    case 'yolo': return 'YOLO TXT';
+    case 'coco': return 'COCO JSON';
+    case 'coco_merged': return 'COCO JSON（合并）';
+    case 'createml': return 'CreateML JSON';
+    case 'labelme': return 'LabelMe JSON';
+    case 'png': return 'PNG 可视化图片';
+    case 'jpg': return 'JPG 可视化图片';
+    case 'unet_mask': return 'U-Net Mask';
+    default: return String(format);
+  }
+}
+
+/** 取文件名（不含目录、不含扩展名）。
+ *
+ *  图片的 `name` 可能是相对路径（文件夹导入会保留 `photos/beach.jpg`）。
+ *  导出时如果原样当文件名用，磁盘上就会凭空多出一个 `photos/` 子目录 ——
+ *  Rust 侧建父目录是为了不让写入失败，但用户看到的是一个莫名其妙的文件夹。
+ *  所以导出一律只用 basename。
+ */
+export function baseNameOf(name: string): string {
+  const file = name.split(/[\\/]/).pop() || name;
+  return file.replace(/\.[^.]+$/, '');
+}
 
 export function getExportData(
   imageName: string,
@@ -12,7 +58,7 @@ export function getExportData(
   const anns = annotations[imageName] || [];
   if (anns.length === 0) return null;
 
-  const baseName = imageName.replace(/\.[^.]+$/, '');
+  const baseName = baseNameOf(imageName);
 
   switch (format) {
     case 'voc': return exportVOC(imgData, anns, baseName);
@@ -75,23 +121,56 @@ function exportYOLO(imgData: ImageInfo, anns: Annotation[], baseName: string) {
   return { filename: baseName + '.txt', content: txt, mimeType: 'text/plain' };
 }
 
+/**
+ * COCO 的类别表 = 检测类别 + 关键点骨架类别。
+ *
+ * 关键点的 category 不能沿用 className（那其实是「骨架类型」）。
+ * 骨架类别必须带上 keypoints / skeleton 定义，否则训练脚本读不出关键点。
+ * 如果骨架的导出名（person / face / hand）刚好和某个检测类同名，复用那个 id ——
+ * 这也是 COCO 的惯例（person 既是检测类，也是关键点类）。
+ */
+function buildCocoCategories(annsList: Annotation[][]): any[] {
+  const cats: any[] = classes.map((c, i) => ({ id: i + 1, name: c, supercategory: 'none' }));
+  for (const anns of annsList) {
+    for (const ann of anns) {
+      if (ann.type !== 'keypoint') continue;
+      const tpl = skeletonFor(ann.skeletonId, ann.points.length);
+      if (!tpl) continue;
+      const name = keypointExportName(ann.points.length, ann.skeletonId);
+      let cat = cats.find(c => c.name === name);
+      if (!cat) {
+        cat = { id: cats.length + 1, name, supercategory: 'none' };
+        cats.push(cat);
+      }
+      // 同名的骨架类别只需要定义一次
+      if (!cat.keypoints) {
+        cat.keypoints = tpl.keypoints;
+        cat.skeleton = tpl.skeleton.map(e => [e[0] + 1, e[1] + 1]);
+      }
+    }
+  }
+  return cats;
+}
+
+/** 一条标注在 COCO 里对应的 category id */
+function cocoCatId(ann: Annotation, cats: any[]): number {
+  const name = ann.type === 'keypoint'
+    ? keypointExportName(ann.points.length, ann.skeletonId)
+    : ann.className;
+  const idx = cats.findIndex(c => c.name === name);
+  return idx >= 0 ? idx + 1 : 1;
+}
+
 function exportCOCO(imgData: ImageInfo, anns: Annotation[], baseName: string) {
   const imageId = images.findIndex(i => i.name === imgData.name) + 1;
+  const cats = buildCocoCategories([anns]);
   const coco = {
     images: [{ id: imageId, file_name: imgData.name, width: imgData.width, height: imgData.height }],
     annotations: [] as any[],
-    categories: (() => {
-      const tpl = summarizeKpTemplate();
-      return classes.map((c, i) => {
-        const cat: any = { id: i + 1, name: c, supercategory: 'none' };
-        if (tpl[c]) { cat.keypoints = tpl[c].kp; cat.skeleton = tpl[c].sk.map(e => [e[0]+1, e[1]+1]); }
-        return cat;
-      });
-    })(),
+    categories: cats,
   };
   anns.forEach((ann, i) => {
-    const catId = classes.indexOf(ann.className) + 1;
-    const ca: any = { id: i + 1, image_id: imageId, category_id: catId > 0 ? catId : 1 };
+    const ca: any = { id: i + 1, image_id: imageId, category_id: cocoCatId(ann, cats) };
     switch (ann.type) {
       case 'rect':
         ca.bbox = [ann.x, ann.y, ann.w, ann.h];
@@ -144,17 +223,11 @@ function exportCreateML(imgData: ImageInfo, anns: Annotation[], baseName: string
 }
 
 export function getMergedCOCO(): string {
+  const cats = buildCocoCategories(images.map(img => annotations[img.name] || []));
   const coco = {
     images: [] as any[],
     annotations: [] as any[],
-    categories: (() => {
-      const tpl = summarizeKpTemplate();
-      return classes.map((c, i) => {
-        const cat: any = { id: i + 1, name: c, supercategory: 'none' };
-        if (tpl[c]) { cat.keypoints = tpl[c].kp; cat.skeleton = tpl[c].sk.map(e => [e[0]+1, e[1]+1]); }
-        return cat;
-      });
-    })(),
+    categories: cats,
   };
   let annId = 1;
   images.forEach((img, imgIdx) => {
@@ -162,8 +235,7 @@ export function getMergedCOCO(): string {
     if (anns.length === 0) return;
     coco.images.push({ id: imgIdx + 1, file_name: img.name, width: img.width, height: img.height });
     anns.forEach(ann => {
-      const catId = classes.indexOf(ann.className) + 1;
-      const ca: any = { id: annId++, image_id: imgIdx + 1, category_id: catId > 0 ? catId : 1 };
+      const ca: any = { id: annId++, image_id: imgIdx + 1, category_id: cocoCatId(ann, cats) };
       switch (ann.type) {
         case 'rect':
           ca.bbox = [ann.x, ann.y, ann.w, ann.h];
@@ -247,7 +319,8 @@ function exportLabelMe(imgData: ImageInfo, anns: Annotation[], baseName: string)
         continue;
     }
     shapes.push({
-      label: ann.className,
+      // 关键点用骨架名（person/face/hand），不是当前激活的类别
+      label: ann.type === 'keypoint' ? keypointExportName(ann.points.length, ann.skeletonId) : ann.className,
       points,
       group_id: null,
       description: '',
@@ -312,30 +385,6 @@ export function getClassificationCSVContent(): string {
 export function exportClassificationCSV() {
   const content = getClassificationCSVContent();
   downloadFile('classification_labels.csv', content, 'text/csv');
-}
-
-
-/** 按 class 名汇总 keypoint 模板（取该 class 下出现最多的点数） */
-function summarizeKpTemplate(): Record<string, { num: number; kp: string[]; sk: number[][] }> {
-  const counts: Record<string, Record<number, number>> = {};
-  for (const name of Object.keys(annotations)) {
-    for (const ann of annotations[name]) {
-      if (ann.type !== 'keypoint') continue;
-      const n = ann.points.length;
-      counts[ann.className] = counts[ann.className] || {};
-      counts[ann.className][n] = (counts[ann.className][n] || 0) + 1;
-    }
-  }
-  const out: Record<string, { num: number; kp: string[]; sk: number[][] }> = {};
-  for (const [cls, byNum] of Object.entries(counts)) {
-    let bestNum = 0, bestCnt = 0;
-    for (const [n, cnt] of Object.entries(byNum)) {
-      if (cnt > bestCnt) { bestCnt = cnt; bestNum = +n; }
-    }
-    const tpl = getAllSkeletons().find(t => t.keypoints.length === bestNum);
-    if (tpl) out[cls] = { num: bestNum, kp: tpl.keypoints, sk: tpl.skeleton };
-  }
-  return out;
 }
 
 

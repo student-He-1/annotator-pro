@@ -1,7 +1,8 @@
 /** 可视化标注图片导出 — 把带标注的图片渲染为 PNG/JPG */
 import type { Annotation, ImageInfo, RectAnnotation, PolygonAnnotation, RotatedAnnotation, KeypointAnnotation } from '../types';
 import { getClassColor } from '../state.svelte';
-import { getAllSkeletons } from '../skeletons';
+import { skeletonFor } from '../skeletons';
+import { baseNameOf } from './formats';
 
 export interface VisualExportOptions {
   format: 'png' | 'jpg';
@@ -92,8 +93,8 @@ export async function renderAnnotatedImage(
       }
     } else if (ann.type === 'keypoint') {
       const kp = ann as KeypointAnnotation;
-      // 按点数匹配骨架模板（17→COCO人体, 68→人脸, 21→手）
-      const tpl = getAllSkeletons().find(t => t.keypoints.length === kp.points.length);
+      // 优先用标注自带的 skeletonId（自定义模板/手动打点都能对上），旧数据按点数兜底
+      const tpl = skeletonFor(kp.skeletonId, kp.points.length);
       if (tpl && tpl.skeleton.length > 0) {
         ctx.lineWidth = Math.max(1, lineWidth - 1);
         ctx.beginPath();
@@ -113,9 +114,8 @@ export async function renderAnnotatedImage(
         ctx.arc(pt.x, pt.y, lineWidth * 2, 0, Math.PI * 2);
         ctx.fill();
       }
-      if (showLabels && kp.points.length > 0) {
-        drawLabel(ctx, ann.className, kp.points[0].x, kp.points[0].y, color, fontSize);
-      }
+      // 关键点不画类别角标（和画布保持一致）：
+      // 它的 className 是骨架类型，画出来只会误导成"这里有个 person 目标"。
     }
   }
 
@@ -164,7 +164,8 @@ export async function exportVisualImage(
     canvas.toBlob((b) => resolve(b!), mimeType, quality);
   });
 
-  const baseName = imgData.name.replace(/\.[^.]+$/, '');
+  // 只用 basename，别让 photos/beach.jpg 导出成 photos/beach_annotated.png
+  const baseName = baseNameOf(imgData.name);
   const ext = options.format === 'jpg' ? 'jpg' : 'png';
   return { filename: `${baseName}_annotated.${ext}`, blob };
 }
@@ -182,7 +183,8 @@ export async function exportVisualImageDataUrl(
   const quality = options.format === 'jpg' ? options.quality || 0.92 : undefined;
   const dataUrl = canvas.toDataURL(mimeType, quality);
 
-  const baseName = imgData.name.replace(/\.[^.]+$/, '');
+  // 只用 basename，别让 photos/beach.jpg 导出成 photos/beach_annotated.png
+  const baseName = baseNameOf(imgData.name);
   const ext = options.format === 'jpg' ? 'jpg' : 'png';
   return { filename: `${baseName}_annotated.${ext}`, dataUrl };
 }

@@ -54,6 +54,7 @@
   let newName = $state('');
   let newKeypoints = $state('');  // 每行一个名称
   let newEdges = $state('');     // 每行 "0-1"
+  let newExportName = $state(''); // 导出类别名（英文，可选）
 
   function handleSaveCustom() {
     const kps = newKeypoints.split(/[\n,，]/).map(s => s.trim()).filter(Boolean);
@@ -63,10 +64,15 @@
       const m = line.match(/(\d+)\s*[-:]\s*(\d+)/);
       if (m) edges.push([+m[1], +m[2]]);
     }
+    const exportName = newExportName.trim();
     const id = 'custom_' + Date.now();
-    const tpl: SkeletonTemplate = { id, name: newName.trim(), keypoints: kps, skeleton: edges };
+    const tpl: SkeletonTemplate = {
+      id, name: newName.trim(), keypoints: kps, skeleton: edges,
+      // 留空就退回 'keypoint'（COCO/LabelMe 里所有自定义骨架会共用一个类别）
+      ...(exportName ? { exportName } : {}),
+    };
     upsertCustomSkeleton(tpl);
-    newName = ''; newKeypoints = ''; newEdges = '';
+    newName = ''; newKeypoints = ''; newEdges = ''; newExportName = '';
     ui.skeletonId = id;
   }
 
@@ -106,6 +112,11 @@
           <input type="text" class="ce-input" placeholder="模板名称，如：动物耳朵" bind:value={newName}>
           <textarea class="ce-area" placeholder="关键点名称，每行一个&#10;如：&#10;left_ear&#10;right_ear&#10;nose" bind:value={newKeypoints} rows="5"></textarea>
           <textarea class="ce-area" placeholder="连线（每行一对索引，0-based）&#10;如：&#10;0-1&#10;0-2" bind:value={newEdges} rows="3"></textarea>
+          <input type="text" class="ce-input" placeholder="导出类别名（英文，可选），如：cat" bind:value={newExportName}>
+          <p class="skeleton-hint">
+            导出 COCO / LabelMe 时用它当类别名。留空会写成 <code>keypoint</code>，
+            所有没填导出名的自定义骨架会共用一个类别。
+          </p>
           <button class="btn-sm btn-primary" onclick={handleSaveCustom}>保存模板</button>
         </div>
       {/if}

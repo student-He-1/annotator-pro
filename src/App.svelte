@@ -5,16 +5,16 @@
     images, ui, classes, classColors, COLORS,
     selectAnnotation, loadSavedData, saveAnnotations, saveAnnotationsNow, showToast,
     applyTheme, toggleTheme,
-    getImagesWithAnnotations, getTotalLabelCount, getCurrentModeCount, getCurrentModeUnit,
+    getImagesWithAnnotations, getTotalLabelCount,
     classColors as colors, getClassColor, pushHistory,
     annotations, markModified, clearModified, imageModified, forgetUndoBaseline,
   } from './lib/state.svelte';
-  import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask } from '$lib/export/formats';
+  import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask, formatDropsKeypoints, formatLabel } from '$lib/export/formats';
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
   import { saveProjectAs, loadProjectFromFile } from '$lib/project.svelte';
   import { fitToScreen, render, getMinZoom, clampPan } from '$lib/canvas/engine.svelte';
   import { clearCache as clearSamCache } from '$lib/sam';
-  import type { ImageInfo, ExportFormat } from '$lib/types';
+  import type { ImageInfo, ExportFormat, Annotation } from '$lib/types';
 
   // Tauri 工具函数：直接尝试调用，失败就返回 null
   async function tauriInvoke(cmd: string, args?: any): Promise<any> {
@@ -515,6 +515,20 @@
     }
   }
 
+  /** 导出前提醒：VOC / YOLO / CreateML 没有关键点概念，骨架会被丢掉。
+   *  以前是**静默丢弃**的 —— 用户导完发现骨架没了，还以为是没标上。
+   *  要保留关键点请用 COCO 或 LabelMe。 */
+  function warnIfDropsKeypoints(annsList: Annotation[][]) {
+    if (!formatDropsKeypoints(ui.exportFormat)) return;
+    const n = annsList.reduce((s, anns) => s + anns.filter(a => a.type === 'keypoint').length, 0);
+    if (n > 0) {
+      showToast(
+        `${formatLabel(ui.exportFormat)} 不支持关键点，${n} 个骨架不会写入文件（要保留请改用 COCO 或 LabelMe）`,
+        'error'
+      );
+    }
+  }
+
   async function handleExportCurrent() {
     // 分类模式没有「单图标注文件」这回事，统一导出标签 CSV
     if (ui.workMode === 'classification') { await exportClassificationLabels(); return; }
@@ -523,64 +537,46 @@
     if (!imgData) return;
     const name = imgData.name;
 
-    // 尝试 Tauri 原生保存对话框
-    {
-      const dirPath = await tauriInvoke('pick_save_directory');
-      if (dirPath) {
-        let savedPath: string | null = null;
+    warnIfDropsKeypoints([annotations[name] || []]);
 
-        if (ui.exportFormat === 'png' || ui.exportFormat === 'jpg' || ui.exportFormat === 'unet_mask') {
-          const anns = annotations[name] || [];
-          // unet_mask 走灰度高图导出，和可视化图是两条不同的实现
-          const result = ui.exportFormat === 'unet_mask'
-            ? await exportUnetMask(imgData, anns)
-            : await exportVisualImageDataUrl(imgData, anns, { format: ui.exportFormat as 'png' | 'jpg' });
-          savedPath = await tauriInvoke('save_file_base64', {
-            dirPath,
-            filename: result.filename,
-            contentBase64: result.dataUrl.split(',')[1],
-          });
-        } else {
-          const data = getExportData(name, ui.exportFormat);
-          if (!data) { showToast(t('noAnnotations'), 'error'); return; }
-          savedPath = await tauriInvoke('save_file_base64', {
-            dirPath,
-            filename: data.filename,
-            contentBase64: textToBase64(data.content),
-          });
-        }
+    // 先把要写的内容准备好，再决定怎么落地
+    const anns = annotations[name] || [];
+    const isImageFmt = ui.exportFormat === 'png' || ui.exportFormat === 'jpg' || ui.exportFormat === 'unet_mask';
+    let filename = '';
+    let contentBase64 = '';
+    let dataUrl = '';
+    let mimeType = '';
 
-        // 写盘失败时 tauriInvoke 返回 null，不能再无脑报「成功」
-        if (savedPath) {
-          showToast(`导出成功：${savedPath}`, 'success');
-        } else {
-          showToast(`导出失败：未能写入 ${dirPath}（请检查目录权限，或换一个目录）`, 'error');
-        }
-        return;
-      }
+    if (isImageFmt) {
+      // unet_mask 走灰度图导出，和可视化图是两条不同的实现
+      const result = ui.exportFormat === 'unet_mask'
+        ? await exportUnetMask(imgData, anns)
+        : await exportVisualImageDataUrl(imgData, anns, { format: ui.exportFormat as 'png' | 'jpg' });
+      filename = result.filename;
+      dataUrl = result.dataUrl;
+      contentBase64 = result.dataUrl.split(',')[1];
+      mimeType = ui.exportFormat === 'jpg' ? 'image/jpeg' : 'image/png';
+    } else {
+      const data = getExportData(name, ui.exportFormat);
+      if (!data) { showToast(t('noAnnotations'), 'error'); return; }
+      filename = data.filename;
+      mimeType = data.mimeType;
+      contentBase64 = textToBase64(data.content);
+      dataUrl = `data:${mimeType};base64,${contentBase64}`;
     }
 
-    // PNG/JPG 可视化图片导出（浏览器环境）
-    if (ui.exportFormat === 'png' || ui.exportFormat === 'jpg') {
-      const anns = annotations[name] || [];
-      const result = await exportVisualImageDataUrl(imgData, anns, { format: ui.exportFormat });
-      downloadFile(result.filename, result.dataUrl, ui.exportFormat === 'jpg' ? 'image/jpeg' : 'image/png');
-      showToast(t('exportSuccess'), 'success');
+    // 单图导出走「另存为」：不用先选文件夹，也不会因为文件名带相对路径而多建子目录
+    const savedPath = await tauriInvoke('save_file_as', { defaultName: filename, contentBase64 });
+    if (savedPath) {
+      showToast(`导出成功：${savedPath}`, 'success');
       return;
     }
+    // 返回 null 有两种可能：浏览器环境没有这个命令 / 用户在对话框里取消了
+    const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
+    if (isTauri) { showToast('已取消导出', 'info'); return; }
 
-    // U-Net Mask 导出
-    if (ui.exportFormat === 'unet_mask') {
-      const anns = annotations[name] || [];
-      const result = await exportUnetMask(imgData, anns);
-      downloadFile(result.filename, result.dataUrl, 'image/png');
-      showToast(t('exportSuccess'), 'success');
-      return;
-    }
-
-    const data = getExportData(name, ui.exportFormat);
-    if (!data) { showToast(t('noAnnotations'), 'error'); return; }
-    downloadFile(data.filename, data.content, data.mimeType);
+    // 浏览器环境：退回下载
+    downloadFile(filename, dataUrl, mimeType);
     showToast(t('exportSuccess'), 'success');
   }
 
@@ -630,6 +626,8 @@
       return;
     }
 
+    warnIfDropsKeypoints(getImagesWithAnnotations().map(img => annotations[img.name] || []));
+
     // 尝试 Tauri 原生对话框
     const dirPath = await tauriInvoke('pick_save_directory');
     if (dirPath) {
@@ -639,8 +637,21 @@
 
       // save_file_base64 失败时 tauriInvoke 会吞掉异常返回 null，
       // 所以必须看返回值 —— 原来写完就 count++，会报「成功」但目录里什么都没有。
+      // 另外导出文件名现在只用 basename（不再带 photos/ 这种子目录），
+      // 不同子文件夹里的同名图片会撞车，这里加 -2 / -3 后缀避免互相覆盖。
+      const usedNames = new Set<string>();
       const writeOne = async (filename: string, contentBase64: string) => {
-        const ok = await tauriInvoke('save_file_base64', { dirPath: dir, filename, contentBase64 });
+        let unique = filename;
+        if (usedNames.has(unique)) {
+          const m = filename.match(/^(.*?)(\.[^.]+)$/);
+          const stem = m ? m[1] : filename;
+          const ext = m ? m[2] : '';
+          let n = 2;
+          while (usedNames.has(`${stem}-${n}${ext}`)) n++;
+          unique = `${stem}-${n}${ext}`;
+        }
+        usedNames.add(unique);
+        const ok = await tauriInvoke('save_file_base64', { dirPath: dir, filename: unique, contentBase64 });
         if (ok) count++; else failed++;
       };
 
@@ -907,11 +918,18 @@
 
   /** 立刻保存标注（工具栏「保存标注」按钮 = Ctrl+S）。
    *  自动保存机制没动，这只是多一个「按了就一定有反馈」的入口。
-   *  计数必须按模式取：分类模式的东西在 imageLabels 上，
-   *  用 getTotalAnnotationCount() 会永远显示「0 处标注」。 */
+   *
+   *  数量必须统计**当前图片**。原来用的是 getCurrentModeCount() —— 那是**全工程合计**，
+   *  于是「把当前图删光 → 点保存」仍然显示「共 13 处标注」，切到别的图也不变，
+   *  看起来像没刷新/卡死。这里直接读 annotations[当前图]，不经过任何 derived。 */
   function handleSaveAnnotationsNow() {
+    const name = images[ui.currentImageIndex]?.name;
+    const isCls = ui.workMode === 'classification';
+    const n = name
+      ? (isCls ? (ui.imageLabels[name]?.length || 0) : (annotations[name]?.length || 0))
+      : 0;
     if (saveAnnotationsNow()) {
-      showToast(`已保存 · 共 ${getCurrentModeCount()} ${getCurrentModeUnit()}`, 'success');
+      showToast(`已保存 · 当前图片 ${n} ${isCls ? '个标签' : '处标注'}`, 'success');
     }
   }
 

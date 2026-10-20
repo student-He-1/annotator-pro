@@ -245,6 +245,35 @@ fn save_file_base64(dir_path: String, filename: String, content_base64: String) 
     Ok(file_path.to_string_lossy().to_string())
 }
 
+/// 另存为单个文件：弹原生「保存文件」对话框，选完路径直接写盘。
+/// 单图导出走这里 —— 不必先选一个文件夹，也就不会因为文件名带相对路径而多建子目录。
+#[tauri::command]
+async fn save_file_as(
+    app: tauri::AppHandle,
+    default_name: String,
+    content_base64: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .blocking_save_file();
+    let target = match picked {
+        Some(p) => p,
+        None => return Ok(None),   // 用户取消
+    };
+    let path = PathBuf::from(target.to_string());
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&content_base64)
+        .map_err(|e| e.to_string())?;
+    fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
 /// Start Python SAM sidecar and return the port
 #[tauri::command]
 async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String> {
@@ -424,6 +453,7 @@ pub fn run() {
             pick_images,
             pick_save_directory,
             save_file_base64,
+            save_file_as,
             sam_sidecar_start,
             sam_sidecar_stop,
             sam_segment,

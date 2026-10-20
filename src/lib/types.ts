@@ -43,6 +43,10 @@ export interface KeypointAnnotation {
   id: number;
   className: string;
   points: Point[];
+  /** 这条骨架用的是哪个模板（coco_body / face_68 / hand_21 / custom_xxx / none）。
+   *  以前没有这个字段，只能按「点数」反推模板 —— 手动打的点数量和模板对不上，
+   *  就永远匹配不到骨架线，导出也不认它。旧工程没有该字段时仍按点数兜底。 */
+  skeletonId?: string;
   trackId?: number;
 }
 

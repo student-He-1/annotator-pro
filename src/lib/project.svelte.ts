@@ -4,6 +4,7 @@ import {
   images, annotations, classes, classColors, ui, selectAnnotation, showToast,
 } from './state.svelte';
 import { render, fitToScreen } from './canvas/engine.svelte';
+import { getAllSkeletons } from './skeletons';
 
 const PROJECT_VERSION = '1.0';
 const RECENT_KEY = 'annotator_recent_projects';
@@ -133,6 +134,28 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     // Restore annotations
     Object.keys(annotations).forEach(k => delete annotations[k]);
     Object.assign(annotations, project.annotations || {});
+
+    // 关键点标注记着 skeletonId（模板 id）。自定义模板只存在本机 localStorage 里，
+    // 换台机器打开同一个工程时可能找不到 —— 那就只能退回「按点数猜」，
+    // 连线和导出都会跟着变样。这里明确提示一下，别让它静默降级。
+    {
+      const known = new Set(getAllSkeletons().map(s => s.id));
+      const missing = new Set<string>();
+      for (const name of Object.keys(annotations)) {
+        for (const ann of annotations[name]) {
+          if (ann.type === 'keypoint' && ann.skeletonId && ann.skeletonId !== 'none' && !known.has(ann.skeletonId)) {
+            missing.add(ann.skeletonId);
+          }
+        }
+      }
+      if (missing.size > 0) {
+        showToast(
+          `有 ${missing.size} 个骨架模板在本机不存在（${[...missing].slice(0, 3).join(', ')}），` +
+          `相关关键点会按点数粗略绘制；请在本机重新创建同名模板`,
+          'error'
+        );
+      }
+    }
 
     // Restore imageLabels
     Object.keys(ui.imageLabels).forEach(k => delete ui.imageLabels[k]);

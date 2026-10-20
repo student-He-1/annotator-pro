@@ -15,9 +15,10 @@
     resizeRectAnnotation, fitToScreen, hitTestPolygonVertex, hitTestPolygonEdge,
     getMinZoom, clampPan,
   } from '$lib/canvas/engine.svelte';
-  import type { Annotation, RectAnnotation, RotatedAnnotation, DragHandle, PolygonAnnotation } from '$lib/types';
+  import type { Annotation, RectAnnotation, RotatedAnnotation, DragHandle, PolygonAnnotation, KeypointAnnotation } from '$lib/types';
   import { magicWand } from '$lib/magicwand';
   import { segment, isModelLoaded, clearCache as clearSamCache } from '$lib/sam';
+  import { skeletonFor, getSkeleton } from '$lib/skeletons';
 
   let canvasEl: HTMLCanvasElement;
   let containerEl: HTMLDivElement;
@@ -215,13 +216,38 @@
     if (ui.currentTool === 'keypoint') {
       if (!ui.isDrawing) {
         ui.isDrawing = true;
-        ui.drawingAnnotation = { type: 'keypoint', points: [], className: getActiveClass(), id: getNextAnnotationId() };
+        ui.drawingAnnotation = {
+          type: 'keypoint', points: [], className: getActiveClass(), id: getNextAnnotationId(),
+          // 记住当前选中的骨架模板。渲染连线、COCO/LabelMe 的类别都靠它，
+          // 不能再靠「点数」反推 —— 手动打点时点数一直在变，永远猜不中模板。
+          skeletonId: ui.skeletonId,
+        } as KeypointAnnotation;
       }
       if (ui.drawingAnnotation && 'points' in ui.drawingAnnotation) {
-        ui.drawingAnnotation.points.push({ x: imgPos.x, y: imgPos.y });
+        const pts = ui.drawingAnnotation.points;
+        // 选定了固定点数的模板（人体 17 / 人脸 68 / 手 21 / 自定义）时，点数有上限
+        const tpl = (ui.skeletonId && ui.skeletonId !== 'none')
+          ? skeletonFor(ui.skeletonId, pts.length)
+          : undefined;
+        const limit = tpl && tpl.keypoints.length > 0 ? tpl.keypoints.length : Infinity;
+
+        if (pts.length >= limit) {
+          showToast(`${tpl?.name || '该骨架'}只有 ${limit} 个点；按 Enter 结束，或换一个骨架模板`, 'info');
+          return;
+        }
+
+        pts.push({ x: imgPos.x, y: imgPos.y });
+        render();
+        markModified();
+
+        // 放满模板点数 → 自动收尾。手动打点也该像「一键检测」那样点到为止，
+        // 不用记着回车（用户反馈过「标完没进标注列表」，就是漏了这步）。
+        if (pts.length >= limit) {
+          showToast(`已放满 ${limit} 个点，自动生成 ${tpl?.name || '骨架'}`, 'success');
+          finishKeypoint();
+        }
+        return;
       }
-      render();
-      markModified();
     }
 
     if (ui.currentTool === 'polygon') {
@@ -865,11 +891,19 @@
 
   <!-- 绘制状态提示 -->
   {#if (ui.currentTool === 'polygon' && ui.polygonPoints.length > 0) || (ui.currentTool === 'keypoint' && ui.isDrawing)}
+    {@const kpTpl = ui.skeletonId && ui.skeletonId !== 'none' ? getSkeleton(ui.skeletonId) : null}
+    {@const kpPlaced = (ui.drawingAnnotation as any)?.points?.length || 0}
     <div class="drawing-hint">
       <span class="drawing-count">
-        {ui.currentTool === 'polygon' ? `多边形：${ui.polygonPoints.length} 点` : `关键点：${(ui.drawingAnnotation as any)?.points?.length || 0} 点`}
+        {ui.currentTool === 'polygon'
+          ? `多边形：${ui.polygonPoints.length} 点`
+          : (kpTpl && kpTpl.keypoints.length > 0
+              ? `${kpTpl.name}：${kpPlaced} / ${kpTpl.keypoints.length} 点`
+              : `关键点：${kpPlaced} 点`)}
       </span>
-      <span class="drawing-keys">Enter 结束 · Backspace 删上一点 · Escape 取消</span>
+      <span class="drawing-keys">
+        {ui.currentTool === 'keypoint' ? '放满自动结束 · ' : ''}Enter 结束 · Backspace 删上一点 · Escape 取消
+      </span>
     </div>
   {/if}
 
