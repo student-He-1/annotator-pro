@@ -1,12 +1,15 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t } from '$lib/i18n.svelte';
   import { ui, getCurrentAnnotations, images, isModified } from '$lib/state.svelte';
 
-  let mousePos = $state({ x: 0, y: 0 });
-
-  export function updateMousePos(x: number, y: number) {
-    mousePos = { x, y };
-  }
+  // 坐标以前是组件局部 state + 一个 updateMousePos() 导出函数，
+  // 但没有任何地方调用过它 → 状态栏永远显示 x: 0, y: 0。
+  // 现在直接读 Canvas 在 mousemove 里写好的 ui.mouseImg*（图像坐标）。
+  const coordText = $derived(
+    ui.mouseOverCanvas && ui.currentImage
+      ? `x: ${ui.mouseImgX.toFixed(0)}, y: ${ui.mouseImgY.toFixed(0)}`
+      : 'x: —, y: —'
+  );
 
   const currentName = $derived(
     ui.currentImageIndex >= 0 && images[ui.currentImageIndex] ? images[ui.currentImageIndex].name : t('noFile')
@@ -27,7 +30,7 @@
     <span>{annCount} {t('totalAnnotations')}</span>
   </div>
   <div class="status-right">
-    <span>x: {mousePos.x.toFixed(0)}, y: {mousePos.y.toFixed(0)}</span>
+    <span class="coords">{coordText}</span>
     <span>
       <span class="status-dot" class:unsaved={modified} class:saved={ui.currentImageIndex >= 0 && !modified} class:empty={ui.currentImageIndex < 0}></span>
       {modified ? t('unsaved') : ui.currentImageIndex >= 0 ? t('saved') : t('empty')}

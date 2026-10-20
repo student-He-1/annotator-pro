@@ -62,6 +62,10 @@ export interface ImageInfo {
 /** 快捷键配置 */
 export interface ShortcutMap {
   select: string; rect: string; polygon: string; rotated: string; keypoint: string;
+  /** SAM 工具（M）。曾经漏在这里，重置快捷键时会被整个抹掉 → M 键永久失效 */
+  sam: string;
+  /** 魔术棒（W）。工具栏一直标着 W，但之前既没字段也没接键 */
+  magicwand: string;
   undo: string; redo: string; redoAlt: string;
   delete: string; copy: string;
   zoomIn: string; zoomOut: string; fit: string;
@@ -84,6 +88,10 @@ export interface DragHandle {
 export interface HistoryEntry {
   imageName: string;
   annotations: Annotation[];
+  /** 该图片的分类标签（分类模式专用）。
+   *  以前只存 annotations，于是分类模式下 Ctrl+Z 是个「撤了但什么都没变」的空操作。
+   *  旧的历史条目/旧工程里没有这个字段，用 `|| []` 兜底。 */
+  labels?: string[];
 }
 
 /** 工程文件中的图片条目 */

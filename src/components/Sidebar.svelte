@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { t, getLang } from '$lib/i18n.svelte';
-  import { images, annotations, ui, getTotalAnnotationCount, getImagesWithAnnotations } from '$lib/state.svelte';
+  import { images, annotations, ui, getTotalAnnotationCount, getImagesWithAnnotations, getTotalLabelCount, getLabeledImageCount } from '$lib/state.svelte';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -23,10 +23,10 @@
   const statsText = $derived.by(() => {
     if (images.length === 0) return '';
     if (ui.workMode === 'classification') {
-      const imgNames = images.map(i => i.name); const labeled = imgNames.filter(k => (ui.imageLabels[k] || []).length > 0).length;
-      const total = imgNames.reduce((s, k) => s + (ui.imageLabels[k] || []).length, 0);
+      // 统计口径统一走 state 里的按模式取数函数，别在这里再写一份
+      const labeled = getLabeledImageCount();
       // 明确区分「图片张数」和「标签个数」，避免把 13 个标签读成 13 张图
-      return `已打标 ${labeled} 张 / 共 ${images.length} 张 · ${total} 个标签`;
+      return `已打标 ${labeled} 张 / 共 ${images.length} 张 · ${getTotalLabelCount()} 个标签`;
     }
     // 原来写成「3/28 已标注 | 13 个标注」，容易被读成「28 张里 13 张已标注」
     return `已标注 ${getImagesWithAnnotations().length} 张 / 共 ${images.length} 张 · ${getTotalAnnotationCount()} 处标注`;

@@ -4,7 +4,7 @@
     ui, images, classes, classColors, getClassCounts,
     COLORS, getClassColor, getCurrentAnnotations, selectAnnotation, deleteAnnotation,
     pushHistory, showToast, batchDeleteAll, getActiveClass, setActiveClass, annotations, saveAnnotations,
-    getNextAnnotationId, addAnnotation,
+    getNextAnnotationId, addAnnotation, markModified,
   } from '$lib/state.svelte';
   import { render } from '$lib/canvas/engine.svelte';
   import type { ExportFormat, Annotation } from '$lib/types';
@@ -49,6 +49,10 @@
     } else {
       labels.push(className);
     }
+    // 分类模式的「脏标记」必须走 markModified()，否则状态栏永远是「已保存」、
+    // 工具栏的保存按钮也永远不亮 —— 之前这里只 pushHistory + saveAnnotations，
+    // 没有任何东西会让 imageModified 变 true。
+    markModified();
     pushHistory();
     saveAnnotations();
   }
@@ -105,6 +109,11 @@
     if (count === 0) return;
     if (!confirm(`确定要清除当前图片的 ${count} 个标注吗？此操作可撤销。`)) return;
     batchDeleteAll('current');
+    // 必须补一次历史快照：batchDeleteAll() 自己不会 pushHistory，
+    // 而这里（以及下面那句 toast）都明确承诺了「可撤销」。
+    // 少了这一句，「7 个标注 → 清除 → Ctrl+Z」会退回 6 个：因为清除没进历史，
+    // Ctrl+Z 撤掉的是上一次「添加第 7 个」的操作。
+    pushHistory();
     render();
     showToast(`已清除 ${count} 个标注，可按 Ctrl+Z 撤销`, 'success');
   }
@@ -401,6 +410,9 @@
     {#if ui.currentTool === 'sam'}
       <div class="section sam-section">
         <h4>智能分割 SAM</h4>
+        {#if !ui.samModelReady}
+          <p class="pcs-hint">后端未连接：点工具栏的 SAM 图标 → 「连接后端服务」，连上后这里会自动可用</p>
+        {/if}
         <p class="muted">点击=正点 · Shift+点击=负点 · 拖拽=框选</p>
 
         <div class="sub-section">
@@ -452,6 +464,32 @@
             </div>
           {/if}
         </div>
+      </div>
+    {/if}
+
+    <!-- 魔术棒参数（仅魔术棒工具时显示）-->
+    {#if ui.currentTool === 'magicwand'}
+      <div class="section sam-section wand-section">
+        <h4>魔术棒</h4>
+        <p class="muted">在画布上点击要选取的颜色区域，自动生成多边形</p>
+        <div class="wand-row">
+          <label>颜色容差</label>
+          <input type="range" min="1" max="255" step="1" bind:value={ui.magicWandTolerance} />
+          <span class="wand-value">{ui.magicWandTolerance}</span>
+        </div>
+        <div class="wand-row">
+          <label>轮廓简化</label>
+          <input type="range" min="0" max="20" step="0.5" bind:value={ui.magicWandSimplify} />
+          <span class="wand-value">{ui.magicWandSimplify}</span>
+        </div>
+        <div class="wand-row wand-check">
+          <label for="wand-contiguous">只取连通区域</label>
+          <input id="wand-contiguous" type="checkbox" bind:checked={ui.magicWandContiguous} />
+        </div>
+        <p class="muted">
+          容差越大选中的颜色范围越广（全图同色区域较大时容易把背景一起选上）；
+          关掉「只取连通区域」＝按颜色全局匹配。简化越大顶点越少。
+        </p>
       </div>
     {/if}
 
@@ -584,33 +622,43 @@
         <button onclick={handleAddClass}>+</button>
       </div>
     </div>
+    {/if}
 
-    <!-- Export -->
+    <!-- Export — 两种模式都必须有。
+         以前整个 Export 区块都写在检测模式的 {:else} 分支里，
+         分类模式下连导出按钮都不存在，用户只能去点工具栏那个 ↓，
+         而那个入口写盘失败也会报「导出成功」。 -->
     <div class="section">
       <h4>{t('export')}</h4>
-      <div class="export-format">
-        <label>{t('chooseFormat')}</label>
-        <select value={ui.exportFormat} onchange={(e) => ui.exportFormat = (e.target as HTMLSelectElement).value as ExportFormat}>
-          {#each formats as f}
-            <option value={f.value}>{f.label}</option>
-          {/each}
-        </select>
-      </div>
-      <div class="export-buttons">
-        <button class="btn-sm btn-success" onclick={props.onExportCurrent}>{t('currentExport')}</button>
-        <button class="btn-sm btn-primary" onclick={props.onBatchExport}>{t('batchExportBtn')}</button>
-      </div>
-      <div class="import-section">
-        <input type="file" accept=".json" bind:this={labelmeInput} style="display:none"
-          onchange={(e) => {
-            const f = (e.target as HTMLInputElement).files?.[0];
-            if (f) props.onImportLabelme(f);
-            (e.target as HTMLInputElement).value = '';
-          }} />
-        <button class="btn-sm btn-import" onclick={() => labelmeInput?.click()}>导入 LabelMe 标注</button>
-      </div>
+      {#if ui.workMode === 'classification'}
+        <p class="muted">导出「文件名, 标签」两列的 CSV，一张图多个标签就多行</p>
+        <div class="export-buttons">
+          <button class="btn-sm btn-primary" onclick={props.onBatchExport}>导出分类标签 CSV</button>
+        </div>
+      {:else}
+        <div class="export-format">
+          <label>{t('chooseFormat')}</label>
+          <select value={ui.exportFormat} onchange={(e) => ui.exportFormat = (e.target as HTMLSelectElement).value as ExportFormat}>
+            {#each formats as f}
+              <option value={f.value}>{f.label}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="export-buttons">
+          <button class="btn-sm btn-success" onclick={props.onExportCurrent}>{t('currentExport')}</button>
+          <button class="btn-sm btn-primary" onclick={props.onBatchExport}>{t('batchExportBtn')}</button>
+        </div>
+        <div class="import-section">
+          <input type="file" accept=".json" bind:this={labelmeInput} style="display:none"
+            onchange={(e) => {
+              const f = (e.target as HTMLInputElement).files?.[0];
+              if (f) props.onImportLabelme(f);
+              (e.target as HTMLInputElement).value = '';
+            }} />
+          <button class="btn-sm btn-import" onclick={() => labelmeInput?.click()}>导入 LabelMe 标注</button>
+        </div>
+      {/if}
     </div>
-    {/if}
   </div>
 </div>
 
@@ -998,6 +1046,22 @@
   .batch-bar { margin-top: 6px; height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden; }
   .batch-bar-fill { height: 100%; background: var(--accent-blue); border-radius: 2px; transition: width 0.2s ease; }
   .batch-cancel { margin-top: 6px; }
+
+  /* ===== 魔术棒参数区块 ===== */
+  .wand-section { background: linear-gradient(180deg, rgba(163,113,247,0.10), transparent); border-color: rgba(163,113,247,0.28); }
+  .wand-section h4 { color: #a371f7; }
+  .wand-row {
+    display: flex; align-items: center; gap: 8px;
+    margin: 6px 0; font-size: 11px; color: var(--text-secondary);
+  }
+  .wand-row label { flex: 0 0 auto; }
+  .wand-row input[type="range"] { flex: 1; min-width: 0; accent-color: #a371f7; height: 16px; }
+  .wand-value {
+    flex: 0 0 32px; text-align: right;
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-primary);
+  }
+  .wand-check { justify-content: space-between; }
+  .wand-check input[type="checkbox"] { accent-color: #a371f7; }
 </style>
 
 

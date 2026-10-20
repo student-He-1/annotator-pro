@@ -5,9 +5,9 @@
     images, ui, classes, classColors, COLORS,
     selectAnnotation, loadSavedData, saveAnnotations, saveAnnotationsNow, showToast,
     applyTheme, toggleTheme,
-    getImagesWithAnnotations, getTotalAnnotationCount,
+    getImagesWithAnnotations, getTotalLabelCount, getCurrentModeCount, getCurrentModeUnit,
     classColors as colors, getClassColor, pushHistory,
-    annotations, markModified, clearModified,
+    annotations, markModified, clearModified, imageModified, forgetUndoBaseline,
   } from './lib/state.svelte';
   import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask } from '$lib/export/formats';
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
@@ -144,6 +144,12 @@
     }
 
     const total = newFiles.length;
+    // 进度条真正接入数据：ui.isLoading / loadingCurrent / loadingTotal / loadingProgress
+    // 在 state.svelte.ts 里原本根本不存在，所以模板里的进度条永远不显示（死 UI）。
+    ui.isLoading = true;
+    ui.loadingTotal = total;
+    ui.loadingCurrent = 0;
+    ui.loadingProgress = 0;
     showToast(`Loading 0/${total} images...`, 'info');
 
     const CONCURRENCY = 4;
@@ -200,6 +206,11 @@
           failed++;
           failedNames.push(newFiles[currentIndex].name);
         }
+        // 进度按「已处理完的张数」算（成功 + 失败都算处理完），
+        // 否则有坏图时进度条永远到不了 100%
+        const done = loaded + failed;
+        ui.loadingCurrent = done;
+        ui.loadingProgress = total > 0 ? Math.round(done / total * 100) : 100;
         if (loaded % 5 === 0 || loaded === total) {
           showToast(`Loading ${loaded}/${total} images...`, 'info');
         }
@@ -209,6 +220,7 @@
     const workers = Array.from({ length: Math.min(CONCURRENCY, newFiles.length) }, () => worker());
     Promise.all(workers).then(() => {
       ui.isLoading = false;
+      ui.loadingCurrent = total;
       ui.loadingProgress = 100;
       if (ui.currentImageIndex < 0 && images.length > 0) {
         ui.currentImageIndex = 0;
@@ -231,7 +243,15 @@
         showToast(`已恢复 ${restoredNames.length} 张图片的历史${labelType}`, 'info');
         }, 800);
       }
-    });
+    })
+      .catch((e: any) => {
+        // 兜底：worker 里一旦抛异常就不该让进度遮罩一直挂着
+        console.error('loadImages failed:', e);
+        showToast('导入过程中出错：' + (e?.message || e), 'error');
+      })
+      .finally(() => {
+        ui.isLoading = false;
+      });
   }
 
   async function handleImportFolder() {
@@ -337,6 +357,13 @@
     try { URL.revokeObjectURL(img.dataUrl); } catch {}
     // 删除标注
     delete annotations[img.name];
+    // 分类模式的图片标签也在这个 key 上，不一起删就会把已删除图片的标签留在
+    // ui.imageLabels 里：保存工程/导出 CSV 会带上幽灵条目，
+    // 以后重新导入同名图片还会「继承」上一次的标签。
+    delete ui.imageLabels[img.name];
+    delete imageModified[img.name];
+    // 撤销基线也一起丢掉，否则以后重新导入同名图片时，撤到底会还原成这一轮删掉的旧数据
+    forgetUndoBaseline(img.name);
     // 从数组删除
     images.splice(index, 1);
     // 处理当前图片索引
@@ -363,6 +390,7 @@
       try { URL.revokeObjectURL(img.dataUrl); } catch {}
     }
     images.splice(0, images.length);
+    forgetUndoBaseline();   // 重新导入时按新状态重新记录基线
     ui.currentImageIndex = -1;
     ui.currentImage = null;
     ui.imageLoading = false;
@@ -379,7 +407,12 @@
     const idx = images.findIndex(img => img.name === imageName);
     if (idx >= 0) {
       handleSelectImage(idx);
+      // 原来只关了「标注质量校验」，而「图片质量筛查」也传了同一个 onJumpToImage，
+      // 从那边点跳转后弹窗一直盖在画面上。两个都关掉。
       showQualityCheck = false;
+      showImageQuality = false;
+    } else {
+      showToast(`图片列表里没有 ${imageName}，请先导入它`, 'error');
     }
   }
 
@@ -440,28 +473,55 @@
   // ============================================================
   // Export
   // ============================================================
+  /** 分类模式的导出：CSV，一行 = 一张图的一个标签。
+   *
+   *  两种模式的两个导出入口（属性面板按钮、工具栏 ↓）全部走这里，原因：
+   *  1. 原来这段逻辑写了两份，都**没检查 `save_file_base64` 的返回值** ——
+   *     写盘失败照样弹「导出成功」，目录里一个文件都没有（第 5 批 #18 的同一类坑）。
+   *  2. 原来还有两条 `ui.exportFormat === 'classification_csv'` 的分支，但
+   *     `classification_csv` 根本不在格式下拉的 formats 里、分类模式下下拉框也不渲染，
+   *     所以那两条永远走不到，是死代码。
+   */
+  // 注意：这个本地函数和 `formats.ts` 里那个 `exportClassificationCSV()`（浏览器下载）不是一回事，
+  // 名字故意不用大小写区分，避免看花眼。
+  async function exportClassificationLabels() {
+    const labelCount = getTotalLabelCount();
+    if (labelCount === 0) {
+      showToast('还没有打过任何标签，没有可导出的内容', 'error');
+      return;
+    }
+    const csvContent = getClassificationCSVContent();
+    const filename = 'classification_labels.csv';
+
+    const dirPath = await tauriInvoke('pick_save_directory');
+    if (!dirPath) {
+      // 浏览器里没有原生目录对话框 → 退回 <a download>；Tauri 里这就是取消
+      const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
+      if (isTauri) { showToast('已取消导出', 'info'); return; }
+      exportClassificationCSV();
+      showToast(`导出成功：${filename}（${labelCount} 个标签）`, 'success');
+      return;
+    }
+
+    const savedPath = await tauriInvoke('save_file_base64', {
+      dirPath,
+      filename,
+      contentBase64: textToBase64(csvContent),
+    });
+    if (savedPath) {
+      showToast(`导出成功：${savedPath}（${labelCount} 个标签）`, 'success');
+    } else {
+      showToast(`导出失败：未能写入 ${dirPath}（请检查目录权限，或换一个目录）`, 'error');
+    }
+  }
+
   async function handleExportCurrent() {
+    // 分类模式没有「单图标注文件」这回事，统一导出标签 CSV
+    if (ui.workMode === 'classification') { await exportClassificationLabels(); return; }
+
     const imgData = images[ui.currentImageIndex];
     if (!imgData) return;
     const name = imgData.name;
-
-    // 分类标签 CSV 导出
-    if (ui.exportFormat === 'classification_csv') {
-      const dirPath = await tauriInvoke('pick_save_directory');
-      if (dirPath) {
-        const csvContent = getClassificationCSVContent();
-        await tauriInvoke('save_file_base64', {
-          dirPath,
-          filename: 'classification_labels.csv',
-          contentBase64: textToBase64(csvContent),
-        });
-        showToast(`导出成功！文件已保存到: ${dirPath}`, 'success');
-        return;
-      }
-      exportClassificationCSV();
-      showToast('导出成功', 'success');
-      return;
-    }
 
     // 尝试 Tauri 原生保存对话框
     {
@@ -559,21 +619,9 @@
   }
 
   async function handleBatchExport() {
-    // 分类模式下导出 CSV
+    // 分类模式：导出标签 CSV（统一走 exportClassificationLabels，内含写盘校验）
     if (ui.workMode === 'classification') {
-      const dirPath = await tauriInvoke('pick_save_directory');
-      if (dirPath) {
-        const csvContent = getClassificationCSVContent();
-        await tauriInvoke('save_file_base64', {
-          dirPath,
-          filename: 'classification_labels.csv',
-          contentBase64: textToBase64(csvContent),
-        });
-        showToast(`导出成功！文件已保存到: ${dirPath}`, 'success');
-        return;
-      }
-      exportClassificationCSV();
-      showToast('导出成功', 'success');
+      await exportClassificationLabels();
       return;
     }
 
@@ -857,6 +905,16 @@
     await saveProjectAs();
   }
 
+  /** 立刻保存标注（工具栏「保存标注」按钮 = Ctrl+S）。
+   *  自动保存机制没动，这只是多一个「按了就一定有反馈」的入口。
+   *  计数必须按模式取：分类模式的东西在 imageLabels 上，
+   *  用 getTotalAnnotationCount() 会永远显示「0 处标注」。 */
+  function handleSaveAnnotationsNow() {
+    if (saveAnnotationsNow()) {
+      showToast(`已保存 · 共 ${getCurrentModeCount()} ${getCurrentModeUnit()}`, 'success');
+    }
+  }
+
   function handleOpenProject() {
     const input = document.createElement('input');
     input.type = 'file';
@@ -933,6 +991,7 @@
       onToggleProps={() => propsCollapsed = !propsCollapsed}
       onUndo={() => canvasRef?.undo()}
       onRedo={() => canvasRef?.redo()}
+      onSaveAnnotations={handleSaveAnnotationsNow}
       onDelete={() => canvasRef?.deleteSelected()}
       onCopy={() => canvasRef?.copySelected()}
       onExport={handleBatchExport}

@@ -7,7 +7,8 @@
     addAnnotation, deleteAnnotation, getActiveClass, getNextAnnotationId,
     copyAllToNextImage, copySelectedToNextImage,
     canUndo, canRedo, classColors, COLORS, classes,
-    imageModified, annotations, saveAnnotations, clearModified,
+    imageModified, saveAnnotations, clearModified,
+    captureUndoBaseline, getUndoBaseline, saveAnnotationsNow, applySnapshot,
   } from '$lib/state.svelte';
   import {
     initEngine, resize, render, screenToImage, imageToScreen, hitTestAnnotation, hitTestHandle,
@@ -101,6 +102,9 @@
       render();
       // 这里原来会清空 ui.history，导致「切到别的图再切回来就撤不了」。
       // 历史条目自带 imageName，undo() 会自己跳回对应图片，不需要清空。
+      // 但要把这张图「本轮最初始的标注」记下来（只记一次），
+      // 撤销撤到最底那一步时要还原成它，而不是无条件清空。
+      captureUndoBaseline(imgData.name);
     };
     img.src = imgData.dataUrl;
   });
@@ -115,9 +119,37 @@
   // SAM 拖拽框可视化（屏幕像素坐标）
   let samDragRect = $state<{ left: number; top: number; w: number; h: number } | null>(null);
 
+  /** Alt+左键点在已选多边形的顶点上 → 删掉这个顶点。
+   *
+   *  这是原来的死代码：它写在 `handleMouseDown` 的 select 分支里，
+   *  但函数开头 `e.button === 0 && e.altKey` 早就被当成「平移画布」return 掉了，
+   *  所以这段永远不会执行。现在提到平移判定之前，只有「没点中顶点」才落到平移。
+   */
+  function tryDeletePolygonVertex(imgPos: { x: number; y: number }): boolean {
+    if (!ui.selectedAnnotation || ui.selectedAnnotation.type !== 'polygon') return false;
+    const vIdx = hitTestPolygonVertex(imgPos.x, imgPos.y);
+    if (vIdx < 0) return false;
+    const ann = ui.selectedAnnotation as PolygonAnnotation;
+    if (ann.points.length <= 3) {
+      // 多边形至少 3 个点。点在顶点上但删不掉时也要返回 true，
+      // 否则这一下会变成「顺带平移画布」，用户会以为误操作。
+      showToast('Polygon needs at least 3 vertices', 'error');
+      return true;
+    }
+    ann.points.splice(vIdx, 1);
+    pushHistory();
+    render();
+    markModified();
+    return true;
+  }
+
   function handleMouseDown(e: MouseEvent) {
     // 自由平移模式下忽略 mousedown
     if (freePanning) return;
+    // Alt+左键：先判「删多边形顶点」，没命中顶点才当平移用
+    if (e.button === 0 && e.altKey && ui.currentTool === 'select' && ui.currentImage && !ui.imageLoading) {
+      if (tryDeletePolygonVertex(screenToImage(e.clientX, e.clientY))) return;
+    }
     if (e.button === 1 || (e.button === 0 && e.altKey)) {
       isPanning = true;
       panStart = { x: e.clientX - ui.panX, y: e.clientY - ui.panY };
@@ -147,22 +179,9 @@
       if (ui.selectedAnnotation && ui.selectedAnnotation.type === 'polygon') {
         const vIdx = hitTestPolygonVertex(imgPos.x, imgPos.y);
         if (vIdx >= 0) {
-          if (e.altKey) {
-            // Alt+click: delete vertex (keep at least 3)
-            const ann = ui.selectedAnnotation as PolygonAnnotation;
-            if (ann.points.length > 3) {
-              ann.points.splice(vIdx, 1);
-              pushHistory();
-              render();
-              markModified();
-            } else {
-              showToast('Polygon needs at least 3 vertices', 'error');
-            }
-          } else {
-            // Start vertex drag
-            ui.draggingVertex = vIdx;
-            ui.dragStart = { ...imgPos };
-          }
+          // Alt+点击删顶点已在函数开头拦掉了，这里只可能是「拖顶点」
+          ui.draggingVertex = vIdx;
+          ui.dragStart = { ...imgPos };
           return;
         }
       }
@@ -320,6 +339,10 @@
     }
     if (!ui.currentImage) return;
     const imgPos = screenToImage(e.clientX, e.clientY);
+    // 状态栏的鼠标坐标：这里报的是「图像坐标」，会画到状态栏上
+    ui.mouseImgX = imgPos.x;
+    ui.mouseImgY = imgPos.y;
+    ui.mouseOverCanvas = true;
 
     // SAM 工具：拖拽中更新框选可视化
     if (samStart) {
@@ -435,6 +458,35 @@
       }
       render();
     }
+  }
+
+  /** 当前是否有「按下后还没松开」的拖拽手势。 */
+  function isGestureActive(): boolean {
+    return isPanning || freePanning || !!samStart || !!ui.dragHandle
+      || ui.draggingVertex >= 0 || !!moveState || (ui.isDrawing && !!ui.drawingAnnotation);
+  }
+
+  /** 鼠标在画布外松开时，canvas 上根本收不到 mouseup，
+   *  于是 isDrawing / dragHandle / draggingVertex / moveState / isPanning 永远不复位 ——
+   *  表现就是「拖出画布松手，之后鼠标一动标注跟着乱飞，得再点一下画布才恢复」。
+   *
+   *  这里在 window 上补一层兜底。canvas 自己的 onmouseup/onmousemove 仍然负责画布内的情况，
+   *  用 e.target 判断避免同一个事件被处理两遍（moveState 是增量移动，跑两遍虽然 dx=0 不会错，
+   *  但会白画一帧）。
+   */
+  function handleWindowMouseUp(e: MouseEvent) {
+    if (e.target === canvasEl) return;
+    handleMouseUp(e);
+  }
+
+  function handleWindowMouseMove(e: MouseEvent) {
+    if (e.target === canvasEl) return;
+    if (!isGestureActive()) return;
+    handleMouseMove(e);
+  }
+
+  function handleMouseLeave() {
+    ui.mouseOverCanvas = false;
   }
 
   function handleDoubleClick(e: MouseEvent) {
@@ -663,7 +715,12 @@
     if (matchShortcut(e, ui.shortcuts.zoomIn)) { e.preventDefault(); ui.zoom = Math.min(10, ui.zoom * 1.2); clampPan(); render(); return; }
     if (matchShortcut(e, ui.shortcuts.zoomOut)) { e.preventDefault(); ui.zoom = Math.max(getMinZoom(), ui.zoom / 1.2); clampPan(); render(); return; }
     if (matchShortcut(e, ui.shortcuts.fit)) { e.preventDefault(); fitToScreen(); render(); return; }
-    if (matchShortcut(e, ui.shortcuts.save)) { e.preventDefault(); saveAnnotations(); showToast(t('autoSaved'), 'success'); return; }
+    // Ctrl+S：立刻写盘（不再走 500ms 防抖），状态栏当场变「已保存」
+    if (matchShortcut(e, ui.shortcuts.save)) {
+      e.preventDefault();
+      if (saveAnnotationsNow()) showToast(t('saved'), 'success');
+      return;
+    }
 
     if (e.key.toLowerCase() === ui.shortcuts.select && !e.ctrlKey && !e.metaKey) { setTool('select'); return; }
     if (e.key.toLowerCase() === ui.shortcuts.rect && !e.ctrlKey && !e.metaKey) { setTool('rect'); return; }
@@ -671,6 +728,8 @@
     if (e.key.toLowerCase() === ui.shortcuts.rotated && !e.ctrlKey && !e.metaKey) { setTool('rotated'); return; }
     if (e.key.toLowerCase() === ui.shortcuts.keypoint && !e.ctrlKey && !e.metaKey) { setTool('keypoint'); return; }
     if (ui.shortcuts.sam && e.key.toLowerCase() === ui.shortcuts.sam && !e.ctrlKey && !e.metaKey) { setTool('sam'); return; }
+    // 工具栏一直标着「魔术棒 W」，但以前这里根本没接这个键
+    if (ui.shortcuts.magicwand && e.key.toLowerCase() === ui.shortcuts.magicwand && !e.ctrlKey && !e.metaKey) { setTool('magicwand'); return; }
 
     if (e.key === 'Enter') {
       if (ui.currentTool === 'polygon' && ui.polygonPoints.length >= 3) finishPolygon();
@@ -727,22 +786,30 @@
     if (idx >= 0) ui.currentImageIndex = idx;
   }
 
+  /** 撤销「history[index] 这次操作」时，这张图该回到哪个状态。
+   *
+   *  历史里可能混着别的图的操作（画 A → 切到 B → 画 B），
+   *  所以不能无脑用 history[index-1]，得往回找**同一张图**上一次记录的状态。
+   *  找不到说明这是这张图本轮第一次被改动 → 用它加载时的初始基线。
+   *  快照里同时含 annotations 和分类标签 labels（两种模式共用同一套撤销）。
+   */
+  function snapshotBefore(curName: string, fromIndex: number): { annotations: Annotation[]; labels: string[] } {
+    for (let j = fromIndex; j >= 0; j--) {
+      const e = ui.history[j];
+      if (e.imageName === curName) return { annotations: e.annotations, labels: e.labels || [] };
+    }
+    return getUndoBaseline(curName);
+  }
+
   function undo() {
     if (ui.historyIndex < 0) return;
-    // cur = 这次要撤销掉的那一步的快照，记着它属于哪张图
+    // cur = 这次要撤销掉的那一步，要还原的是它所在的图
     const cur = ui.history[ui.historyIndex];
     ui.historyIndex = ui.historyIndex - 1;
 
-    if (ui.historyIndex >= 0) {
-      const prev = ui.history[ui.historyIndex];
-      annotations[prev.imageName] = JSON.parse(JSON.stringify(prev.annotations));
-      focusImageByName(prev.imageName);
-    } else {
-      // 撤销的是最早那次操作 → 回到该图「还没有标注」的状态。
-      // 这里必须用 cur.imageName（那次操作所在的图），而不是当前正在看的图。
-      annotations[cur.imageName] = [];
-      focusImageByName(cur.imageName);
-    }
+    applySnapshot(cur.imageName, snapshotBefore(cur.imageName, ui.historyIndex));
+    focusImageByName(cur.imageName);
+
     ui.selectedAnnotation = null;
     ui.drawingAnnotation = null;
     ui.isDrawing = false;
@@ -755,7 +822,7 @@
     if (ui.historyIndex >= ui.history.length - 1) return;
     ui.historyIndex = ui.historyIndex + 1;
     const entry = ui.history[ui.historyIndex];
-    annotations[entry.imageName] = JSON.parse(JSON.stringify(entry.annotations));
+    applySnapshot(entry.imageName, { annotations: entry.annotations, labels: entry.labels || [] });
     if (entry.imageName !== images[ui.currentImageIndex]?.name) {
       const idx = images.findIndex(img => img.name === entry.imageName);
       if (idx >= 0) ui.currentImageIndex = idx;
@@ -771,7 +838,7 @@
   export { handleMouseDown, handleMouseMove, handleMouseUp, handleDoubleClick, handleWheel, handleContextMenu, handleKeyDown, undo, redo, deleteSelected, copySelected, fitToScreen };
 </script>
 
-<svelte:window onkeydown={handleKeyDown} />
+<svelte:window onkeydown={handleKeyDown} onmouseup={handleWindowMouseUp} onmousemove={handleWindowMouseMove} />
 
 <div class="canvas-container" class:free-panning={freePanning} bind:this={containerEl}>
   {#if showWelcome}
@@ -785,6 +852,7 @@
     onmousedown={handleMouseDown}
     onmousemove={handleMouseMove}
     onmouseup={handleMouseUp}
+    onmouseleave={handleMouseLeave}
     ondblclick={handleDoubleClick}
     onwheel={handleWheel}
     oncontextmenu={handleContextMenu}>

@@ -44,17 +44,39 @@ export const ui = $state({
   magicWandSimplify: 3,
   samMaskThreshold: 0.0,
   samSimplifyTolerance: 1.0,
-  samMultiMask: false,
+  /** 与 sam.ts 的 DEFAULT_SAM_CONFIG 保持一致。
+   *  原来这里是 false，而弹窗用的是 DEFAULT_SAM_CONFIG.multiMask = true ——
+   *  同一个开关在两个入口默认值不同，就是「两套参数」问题的另一面。 */
+  samMultiMask: true,
   samPcsPreview: null as { points: { x: number; y: number }[] } | null,
   theme: 'dark' as 'dark' | 'light',
   toastMessages: [] as { id: number; msg: string; type: 'info' | 'success' | 'error' }[],
+  /** 导入图片期间的加载进度。
+   *  原来 App.svelte 的进度条模板直接读这四个字段，但 store 里根本没有它们 →
+   *  `ui.isLoading` 永远是 undefined，进度条是一块永远不显示的「死 UI」。 */
+  isLoading: false,
+  loadingCurrent: 0,
+  loadingTotal: 0,
+  loadingProgress: 0,
+  /** 鼠标在画布上的图像坐标（不是屏幕坐标）。状态栏读这两个值。
+   *  以前 StatusBar 的 updateMousePos() 从没被调用过，所以坐标恒为 0,0。 */
+  mouseImgX: 0,
+  mouseImgY: 0,
+  mouseOverCanvas: false,
+  /** 模型/后端的「已就绪」状态必须放在 $state 里。
+   *  原来 yolo.ts / sam.ts 各自用一个模块级普通变量存着，组件的
+   *  `$derived(isModelLoaded())` 读不到变化 → 加载成功那一刻界面不刷新，
+   *  非得关掉弹窗重开（重新创建组件）才看得到「已加载」。 */
+  samModelReady: false,
+  yoloModelName: '',
+  yoloClassCount: 0,
   activeClass: 'person',
   workMode: 'detection' as 'detection' | 'classification',
   showModeSelect: true,
   imageLabels: {} as Record<string, string[]>,
   shortcuts: {
     select: 'v', rect: 'r', polygon: 'p', rotated: 'o', keypoint: 'k',
-    sam: 'm',
+    sam: 'm', magicwand: 'w',
     undo: 'ctrl+z', redo: 'ctrl+y', redoAlt: 'ctrl+shift+z',
     delete: 'delete', copy: 'ctrl+d',
     zoomIn: 'ctrl+=', zoomOut: 'ctrl+-', fit: 'ctrl+0',
@@ -124,7 +146,16 @@ export function setTool(tool: ToolType) {
 export function markModified() {
   if (ui.currentImageIndex < 0) return;
   const name = images[ui.currentImageIndex]?.name;
-  if (name) imageModified[name] = true;
+  if (!name) return;
+  imageModified[name] = true;
+  // 改动后自动安排一次保存（500ms 防抖）。
+  //
+  // 以前这里只置标志位、不安排保存：只有切图 / 导出 / Ctrl+S 这些动作才会调
+  // saveAnnotations()，而清标志位又是在保存成功的回调里做的。
+  // 结果就是「一直在这张图上画」时，状态栏永远显示「未保存」——数据其实还没落盘，
+  // 指示器没撒谎，但和「自动保存」的用户预期不符。现在改成改完就排队保存，
+  // 停手 500ms 后写盘成功 → 标志位清掉 → 自动变「已保存」。
+  saveAnnotations();
 }
 
 export function isModified(): boolean {
@@ -281,19 +312,74 @@ export function pushHistory() {
   const name = images[ui.currentImageIndex]?.name;
   if (!name) return;
   const snapshot = JSON.parse(JSON.stringify(annotations[name] || []));
+  // 分类模式下图上的「标注」永远是空的，唯一会变的是 ui.imageLabels。
+  // 所以快照必须把标签也带上，否则「打标签」这条历史会被下面的去重逻辑
+  // 判成「和上一条一模一样」直接丢掉，Ctrl+Z 就成了空操作。
+  const labels = [...(ui.imageLabels[name] || [])];
 
   // 去重：状态没变就不产生历史点。
   // 否则「鼠标点一下选中标注」「按下手柄但没拖动」都会 push 一条与上一条完全相同的快照，
   // 用户按 Ctrl+Z 看起来就像没反应（得连按好几次才真正退一格）。
   const last = ui.history[ui.historyIndex];
-  if (last && last.imageName === name && JSON.stringify(last.annotations) === JSON.stringify(snapshot)) {
+  if (last && last.imageName === name
+      && JSON.stringify(last.annotations) === JSON.stringify(snapshot)
+      && JSON.stringify(last.labels || []) === JSON.stringify(labels)) {
     return;
   }
 
   ui.history = ui.history.slice(0, ui.historyIndex + 1);
-  ui.history.push({ imageName: name, annotations: snapshot });
+  ui.history.push({ imageName: name, annotations: snapshot, labels });
   if (ui.history.length > maxHistory) ui.history.shift();
   ui.historyIndex = ui.history.length - 1;
+}
+
+// ============================================================
+// Undo 基线
+// ============================================================
+/**
+ * 每张图「本轮一开始」的状态快照（JSON：`{ annotations, labels }`）。
+ *
+ * 历史条目记的是「操作之后的快照」，所以撤到最底那一步时，需要知道
+ * 这张图在本轮第一次被改动**之前**是什么状态。
+ * 以前这里偷懒直接写成 `[]`（当成「从空白开始画」），
+ * 于是「打开工程 → 删掉几个标注 → Ctrl+Z」会把剩下的一起清空。
+ */
+const historyBaseline: Record<string, string> = {};
+
+/** 记录某张图的初始状态（只记第一次）。图片加载完成时由 Canvas 调用。 */
+export function captureUndoBaseline(name: string) {
+  if (!name || historyBaseline[name] !== undefined) return;
+  historyBaseline[name] = JSON.stringify({
+    annotations: annotations[name] || [],
+    labels: ui.imageLabels[name] || [],
+  });
+}
+
+/** 图片被删掉 / 列表被清空时丢掉它的初始快照，
+ *  否则以后重新导入同名图片，撤销到底会还原成上一轮的旧数据。 */
+export function forgetUndoBaseline(name?: string) {
+  if (name) { delete historyBaseline[name]; return; }
+  for (const k of Object.keys(historyBaseline)) delete historyBaseline[k];
+}
+
+/** 撤销到底时要还原成的状态（没有基线就按空白算）。 */
+export function getUndoBaseline(name: string): { annotations: Annotation[]; labels: string[] } {
+  try {
+    const raw = JSON.parse(historyBaseline[name] ?? 'null');
+    if (raw && Array.isArray(raw.annotations)) {
+      return { annotations: raw.annotations, labels: Array.isArray(raw.labels) ? raw.labels : [] };
+    }
+  } catch { /* 坏数据当成空白 */ }
+  return { annotations: [], labels: [] };
+}
+
+/** 把一份快照写回某张图（撤销 / 重做共用）。
+ *  分类标签为空时直接把 key 删掉，免得检测模式的图片在 imageLabels 里堆一堆空数组。 */
+export function applySnapshot(name: string, snap: { annotations: Annotation[]; labels?: string[] }) {
+  annotations[name] = JSON.parse(JSON.stringify(snap.annotations || []));
+  const labels = snap.labels || [];
+  if (labels.length > 0) ui.imageLabels[name] = [...labels];
+  else delete ui.imageLabels[name];
 }
 
 export function canUndo(): boolean {
@@ -320,23 +406,33 @@ export function showToast(msg: string, type: 'info' | 'success' | 'error' = 'inf
 // ============================================================
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** 防抖保存（500ms 内的连续改动合成一次写盘）。`markModified()` 会自动调用它。 */
 export function saveAnnotations() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const data = { annotations, classes, classColors, theme: ui.theme, imageLabels: ui.imageLabels };
-    try { localStorage.setItem('annotator_data', JSON.stringify(data)); } catch {}
     saveTimer = null;
-    // 自动保存后清除未保存标记
-    Object.keys(imageModified).forEach(k => delete imageModified[k]);
+    saveAnnotationsNow();
   }, 500);
 }
 
-// 立即保存（页面关闭前调用）
-export function saveAnnotationsNow() {
+/** 立刻保存。返回是否真的写成功。
+ *
+ *  - 工具栏「保存标注」按钮和 Ctrl+S 走这里，按下去状态栏马上变「已保存」；
+ *  - 写 localStorage 失败（比如空间满）时**不**清「未保存」标志，并如实报错 ——
+ *    以前这里 `catch {}` 吞掉异常、照样清标志，会变成「显示已保存但其实没存」。
+ */
+export function saveAnnotationsNow(): boolean {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
   const data = { annotations, classes, classColors, theme: ui.theme, imageLabels: ui.imageLabels };
-  try { localStorage.setItem('annotator_data', JSON.stringify(data)); } catch {}
-  // 清除未保存标记
+  try {
+    localStorage.setItem('annotator_data', JSON.stringify(data));
+  } catch (e: any) {
+    showToast(`保存失败：本地存储写入被拒绝（${e?.message || e}）`, 'error');
+    return false;
+  }
+  // 写盘成功才清「未保存」标记
   Object.keys(imageModified).forEach(k => delete imageModified[k]);
+  return true;
 }
 
 export function loadSavedData() {
@@ -393,9 +489,35 @@ const _classCounts = $derived.by(() => {
   return counts;
 });
 
+/** 分类模式下整个工程打了多少「标签」（不是标注个数） */
+const _totalLabelCount = $derived(
+  images.reduce((sum, img) => sum + (ui.imageLabels[img.name]?.length || 0), 0)
+);
+
 export function getImagesWithAnnotations() { return _imagesWithAnnotations; }
 export function getTotalAnnotationCount() { return _totalAnnotationCount; }
+export function getTotalLabelCount() { return _totalLabelCount; }
 export function getCurrentAnnotations() { return _currentAnnotations; }
 export function getClassCounts() { return _classCounts; }
+
+// ============================================================
+// 按模式取数（分类 / 检测两套统计口径的唯一入口）
+// ============================================================
+// 分类模式的数据在 ui.imageLabels 上，检测模式的数据在 annotations 上。
+// 谁要在界面上显示「多少个」，都必须走这两个函数，别再直接调
+// getTotalAnnotationCount() —— 那会让分类模式永远显示 0。
+export function getCurrentModeCount(): number {
+  return ui.workMode === 'classification' ? _totalLabelCount : _totalAnnotationCount;
+}
+
+/** 数量后面的量词 */
+export function getCurrentModeUnit(): string {
+  return ui.workMode === 'classification' ? '个标签' : '处标注';
+}
+
+/** 分类模式下「打过标签的图片张数」 */
+export function getLabeledImageCount(): number {
+  return images.filter(img => (ui.imageLabels[img.name] || []).length > 0).length;
+}
 
 

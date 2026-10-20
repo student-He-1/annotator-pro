@@ -1,7 +1,8 @@
 <script lang="ts">
   import { t } from '$lib/i18n.svelte';
   import { ui, images, annotations, addAnnotation, showToast, getNextAnnotationId, pushHistory, saveAnnotations } from '$lib/state.svelte';
-  import { loadModel, isModelLoaded, getModelName, getClassNames, detect, DEFAULT_YOLO_CONFIG } from '$lib/yolo';
+  import { loadModel, getModelName, getClassNames, detect, DEFAULT_YOLO_CONFIG } from '$lib/yolo';
+  import { render } from '$lib/canvas/engine.svelte';
   import type { Detection } from '$lib/yolo';
   import type { Annotation } from '$lib/types';
 
@@ -21,7 +22,9 @@
   let selectedDetections = $state<Set<number>>(new Set());
   let progress = $state({ current: 0, total: 0 });
 
-  const modelLoaded = $derived(isModelLoaded());
+  // 读 $state 而不是 isModelLoaded()：模型加载成功那一刻界面要立刻变成「可用」，
+  // 以前读的是模块级普通变量，Svelte 追踪不到，必须关掉弹窗重开才生效。
+  const modelLoaded = $derived(!!ui.yoloModelName);
 
   function handleModelFile(e: Event) {
     const input = e.target as HTMLInputElement;
@@ -137,6 +140,7 @@
 
       pushHistory();
       saveAnnotations();
+      render();   // 批量写的是 annotations，画布不会自动跟着刷
       if (failed.length > 0) {
         showToast(
           `Auto-annotated ${images.length - failed.length}/${images.length} images, ${totalDetections} objects；失败 ${failed.length} 张（${failed[0]}）`,
@@ -182,6 +186,11 @@
       });
       count++;
     }
+    // 必须补历史快照 + 重绘：
+    //  · 不 pushHistory，Ctrl+Z 会撤到更早的一步（看起来像随机丢别的东西）
+    //  · 不 render，画布是命令式绘制，面板里已经有 N 个标注了、图上却看不到框
+    pushHistory();
+    render();
     showToast(`Added ${count} annotation(s)`, 'success');
     onClose();
   }
@@ -220,7 +229,7 @@
           {isRunning ? '加载中...' : '加载模型'}
         </button>
         {#if modelLoaded}
-          <div class="model-status">✓ 已加载: {getModelName()} ({getClassNames().length} 类)</div>
+          <div class="model-status">✓ 已加载: {ui.yoloModelName} ({ui.yoloClassCount} 类)</div>
         {/if}
       </div>
 

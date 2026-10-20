@@ -2,6 +2,7 @@
 // 仅类型导入（编译期擦除），运行时通过动态 import 按需加载，避免 28MB 进首屏
 import type * as ort from 'onnxruntime-web';
 import { getOrt } from './ortRuntime';
+import { ui } from './state.svelte';
 
 export interface Detection {
   x: number;
@@ -52,6 +53,12 @@ export async function loadModel(modelFile: File, namesFile?: File): Promise<void
     // 默认 COCO 80 类
     classNames = COCO_CLASSES;
   }
+
+  // 同步到 $state。组件的 `$derived(isModelLoaded())` 读的是模块级普通变量，
+  // Svelte 追踪不到 → 加载成功那一刻界面不会刷新（按钮还是禁用、没有「已加载」提示），
+  // 必须关掉弹窗重开才行。这里把结果写进响应式 store，弹窗就能立刻反映出来。
+  ui.yoloModelName = loadedModelName;
+  ui.yoloClassCount = classNames.length;
 }
 
 /**

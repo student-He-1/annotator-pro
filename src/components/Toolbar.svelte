@@ -1,6 +1,6 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t } from '$lib/i18n.svelte';
-  import { ui, setTool, canUndo, canRedo } from '$lib/state.svelte';
+  import { ui, setTool, canUndo, canRedo, isModified } from '$lib/state.svelte';
   import { fitToScreen } from '$lib/canvas/engine.svelte';
   import Icon from './Icon.svelte';
 
@@ -9,6 +9,8 @@
     onToggleProps: () => void;
     onUndo: () => void;
     onRedo: () => void;
+    /** 立刻保存标注（Ctrl+S 同款）。自动保存仍在，这个按钮只是让它可控、可确认 */
+    onSaveAnnotations: () => void;
     onDelete: () => void;
     onCopy: () => void;
     onExport: () => void;
@@ -41,6 +43,14 @@
     { id: 'magicwand', icon: 'wand', label: 'magicWandTool', key: 'W' },
     { id: 'sam', icon: 'sam', label: 'samTool', key: 'M' },
   ];
+
+  /** 工具栏提示里的键位跟着设置里改过的快捷键走。
+   *  否则在设置里把快捷键改掉之后，工具栏还印着旧的 V/R/P，用户会以为没生效。 */
+  function keyLabel(id: string, fallback: string): string {
+    const k = (ui.shortcuts as unknown as Record<string, string | undefined>)[id];
+    if (!k || k.includes('+')) return fallback;
+    return k.toUpperCase();
+  }
 </script>
 
 <div class="toolbar">
@@ -55,9 +65,9 @@
   {#each tools as tool}
     {#if ui.workMode !== 'classification' || tool.id === 'select'}
     <button class="tool-btn" class:active={ui.currentTool === tool.id} data-tool={tool.id}
-      onclick={() => setTool(tool.id as any)} title={`${t(tool.label)} (${tool.key})`}>
+      onclick={() => setTool(tool.id as any)} title={`${t(tool.label)} (${keyLabel(tool.id, tool.key)})`}>
       <Icon name={tool.icon} size={17} />
-      <span class="tooltip">{t(tool.label)} {tool.key}</span>
+      <span class="tooltip">{t(tool.label)} {keyLabel(tool.id, tool.key)}</span>
     </button>
     {/if}
   {/each}
@@ -68,6 +78,15 @@
   </button>
   <button class="icon-btn" onclick={props.onRedo} title={`${t('redo')} (Ctrl+Y)`} disabled={!canRedo()}>
     <Icon name="redo" size={16} />
+  </button>
+
+  <div class="divider"></div>
+  <!-- 保存标注：自动保存照旧，这个按钮 = 立刻存 + 给一个明确反馈。
+       未保存时按钮变黄，和状态栏的「未保存」是同一份数据。 -->
+  <button class="icon-btn save-annot-btn" class:dirty={isModified()}
+    onclick={props.onSaveAnnotations}
+    title={`保存标注 (Ctrl+S)${isModified() ? ' · 有未保存改动' : ' · 已是最新'}`}>
+    <Icon name="save-check" size={16} />
   </button>
 
   <div class="divider"></div>
@@ -82,21 +101,28 @@
     <Icon name="fit" size={16} />
   </button>
 
-  <div class="divider"></div>
-  <button class="icon-btn" onclick={props.onDelete} title={t('delete')}>
-    <Icon name="trash" size={16} />
-  </button>
-  <button class="icon-btn" onclick={props.onCopy} title={t('copy')}>
-    <Icon name="copy" size={16} />
-  </button>
+  <!-- 删除/复制只对「选中的标注」有意义；分类模式里 annotation 永远是空的，藏起来免得点了没反应 -->
+  {#if ui.workMode !== 'classification'}
+    <div class="divider"></div>
+    <button class="icon-btn" onclick={props.onDelete} title={t('delete')}>
+      <Icon name="trash" size={16} />
+    </button>
+    <button class="icon-btn" onclick={props.onCopy} title={t('copy')}>
+      <Icon name="copy" size={16} />
+    </button>
+  {/if}
 
   <div class="divider"></div>
-  <button class="icon-btn" onclick={props.onExport} title={t('batchExportBtn')}>
+  <button class="icon-btn" onclick={props.onExport}
+    title={ui.workMode === 'classification' ? '导出分类标签 CSV' : t('batchExportBtn')}>
     <Icon name="download" size={16} />
   </button>
-  <button class="icon-btn" onclick={props.onImport} title={t('importSuccess')}>
-    <Icon name="upload" size={16} />
-  </button>
+  <!-- 导入 VOC/COCO/YOLO 是往 annotations 里写框，分类模式下导入进来也看不见，藏掉 -->
+  {#if ui.workMode !== 'classification'}
+    <button class="icon-btn" onclick={props.onImport} title={t('importSuccess')}>
+      <Icon name="upload" size={16} />
+    </button>
+  {/if}
 
   <div class="divider"></div>
   <button class="icon-btn" onclick={props.onSaveProject} title="保存工程">
@@ -184,6 +210,17 @@
   }
   .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
   .icon-btn:disabled:hover { background: transparent; color: var(--text-secondary); transform: none; }
+
+  /* 「保存标注」按钮：有未保存改动时点亮，和状态栏那个黄点同源（都读 imageModified） */
+  .save-annot-btn.dirty {
+    color: #d2991d;
+    border-color: rgba(210,153,29,0.45);
+    background: rgba(210,153,29,0.10);
+  }
+  .save-annot-btn.dirty:hover {
+    color: #f0b429;
+    background: rgba(210,153,29,0.18);
+  }
 
   .tool-btn {
     width: 34px; height: 34px;

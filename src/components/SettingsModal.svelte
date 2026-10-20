@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t, getLang, setLang } from '$lib/i18n.svelte';
   import { ui } from '$lib/state.svelte';
   import { getAllSkeletons, customSkeletons, deleteCustomSkeleton, upsertCustomSkeleton } from '$lib/skeletons';
@@ -13,6 +13,7 @@
   const shortcutNames: Record<string, string> = {
     select: 'selectTool', rect: 'rectTool', polygon: 'polygonTool',
     rotated: 'rotatedTool', keypoint: 'keypointTool',
+    sam: 'samTool', magicwand: 'magicWandTool',
     undo: 'undo', redo: 'redo', delete: 'delete', copy: 'copy',
     zoomIn: 'zoomIn', zoomOut: 'zoomOut', fit: 'fitScreen', save: 'save',
   };
@@ -30,8 +31,13 @@
   }
 
   function resetShortcuts() {
+    // 这里必须把 ui.shortcuts 里「所有」键都列全。
+    // 原来漏了 sam：点一次「重置」就把 ui.shortcuts.sam 抹成 undefined，
+    // 而 Canvas 的 M 键判定是 `ui.shortcuts.sam && ...` → 从此 M 键永久失效，
+    // 直到刷新页面（state 从默认值重建）才恢复。魔术棒 W 也是同一类问题。
     ui.shortcuts = {
       select: 'v', rect: 'r', polygon: 'p', rotated: 'o', keypoint: 'k',
+      sam: 'm', magicwand: 'w',
       undo: 'ctrl+z', redo: 'ctrl+y', redoAlt: 'ctrl+shift+z',
       delete: 'delete', copy: 'ctrl+d',
       zoomIn: 'ctrl+=', zoomOut: 'ctrl+-', fit: 'ctrl+0',

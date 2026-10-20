@@ -4,20 +4,38 @@
   import { loadModel, isModelLoaded, getModelName, segment, DEFAULT_SAM_CONFIG, clearCache } from '$lib/sam';
   import type { SamResult } from '$lib/sam';
   import type { Annotation } from '$lib/types';
+  import { render } from '$lib/canvas/engine.svelte';
 
   interface Props {
     onClose: () => void;
   }
   let { onClose }: Props = $props();
 
-  let maskThreshold = $state(DEFAULT_SAM_CONFIG.maskThreshold);
-  let simplifyTolerance = $state(DEFAULT_SAM_CONFIG.simplifyTolerance);
-  let multiMask = $state(DEFAULT_SAM_CONFIG.multiMask);
+  // 参数不再放组件局部 state。
+  // 原来这里有 maskThreshold/simplifyTolerance/multiMask 三个局部变量，而画布上的
+  // SAM 工具（Canvas.runSamSegment）读的是 ui.samMaskThreshold / ui.samSimplifyTolerance /
+  // ui.samMultiMask —— 两套参数互不相通：在弹窗里调完，点的分割结果根本没变，反之亦然。
+  // 现在两边共用 ui 上的同一份。
+  const samOpts = () => ({
+    encoderInputSize: 1024,
+    maskThreshold: ui.samMaskThreshold,
+    simplifyTolerance: ui.samSimplifyTolerance,
+    multiMask: ui.samMultiMask,
+  });
+
+  function resetSamParams() {
+    ui.samMaskThreshold = DEFAULT_SAM_CONFIG.maskThreshold;
+    ui.samSimplifyTolerance = DEFAULT_SAM_CONFIG.simplifyTolerance;
+    ui.samMultiMask = DEFAULT_SAM_CONFIG.multiMask;
+    showToast('SAM 参数已恢复默认', 'info');
+  }
   let isRunning = $state(false);
   let lastResult = $state<SamResult | null>(null);
   let progress = $state({ current: 0, total: 0 });
 
-  const modelLoaded = $derived(isModelLoaded());
+  // 读 $state，而不是 isModelLoaded()：后者读模块级普通变量，Svelte 追踪不到变化，
+  // 连接成功后界面不会刷新（还得关掉重开一次）。
+  const modelLoaded = $derived(ui.samModelReady);
 
   async function handleLoadModel() {
     try {
@@ -40,12 +58,7 @@
       // 用图片中心作为默认正点 prompt
       const cx = ui.currentImage.width / 2;
       const cy = ui.currentImage.height / 2;
-      lastResult = await segment(ui.currentImage, [{ x: cx, y: cy, label: 1 }], null, {
-        encoderInputSize: 1024,
-        maskThreshold,
-        simplifyTolerance,
-        multiMask,
-      });
+      lastResult = await segment(ui.currentImage, [{ x: cx, y: cy, label: 1 }], null, samOpts());
       if (lastResult.polygon.length >= 3) {
         showToast(`Segmented: ${lastResult.polygon.length} vertices, IoU=${lastResult.iou.toFixed(2)}`, 'success');
       } else {
@@ -78,12 +91,7 @@
           el.src = imgData.dataUrl;
           await new Promise<void>(resolve => { el.onload = () => resolve(); el.onerror = () => resolve(); });
 
-          const result = await segment(el, [{ x: el.naturalWidth / 2, y: el.naturalHeight / 2, label: 1 }], null, {
-            encoderInputSize: 1024,
-            maskThreshold,
-            simplifyTolerance,
-            multiMask,
-          });
+          const result = await segment(el, [{ x: el.naturalWidth / 2, y: el.naturalHeight / 2, label: 1 }], null, samOpts());
           if (result.polygon.length >= 3) {
             // 直接写目标图，不再临时切 currentImageIndex。
             // 切索引会让 Canvas 反复重载图片，正是底片/轮廓错位的来源之一。
@@ -106,6 +114,7 @@
       clearCache();
       pushHistory();
       saveAnnotations();
+      render();   // 批量直接写了 annotations，画布是命令式绘制，不会自己刷
       if (failed.length > 0) {
         showToast(`Auto-segmented ${count}/${images.length} images；失败 ${failed.length} 张（${failed[0]}）`, 'error');
       } else {
@@ -144,18 +153,20 @@
 
       <div class="section">
         <h4>2. 参数配置</h4>
+        <p class="hint">这里的参数和画布上的 SAM 工具（M 键）共用一份，改一处两边都生效</p>
         <div class="form-row">
           <label>Mask 阈值</label>
-          <input type="number" bind:value={maskThreshold} step="0.1" min="-1" max="1" />
+          <input type="number" bind:value={ui.samMaskThreshold} step="0.1" min="-1" max="1" />
         </div>
         <div class="form-row">
           <label>多边形简化精度</label>
-          <input type="number" bind:value={simplifyTolerance} step="0.5" min="0" max="10" />
+          <input type="number" bind:value={ui.samSimplifyTolerance} step="0.5" min="0" max="10" />
         </div>
         <div class="form-row">
           <label>多 Mask 候选（取最优）</label>
-          <input type="checkbox" bind:checked={multiMask} />
+          <input type="checkbox" bind:checked={ui.samMultiMask} />
         </div>
+        <button class="btn-link" onclick={resetSamParams}>恢复默认值</button>
       </div>
 
       {#if modelLoaded}
@@ -237,6 +248,11 @@
   }
   .btn-secondary:hover { background: var(--border); }
   .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-link {
+    margin-top: 8px; padding: 0; background: none; border: none;
+    color: #58a6ff; font-size: 12px; cursor: pointer; text-decoration: underline;
+  }
+  .btn-link:hover { color: #7cb8ff; }
   .progress { margin-top: 10px; position: relative; height: 20px; background: var(--bg-primary); border-radius: 4px; overflow: hidden; }
   .progress-bar { height: 100%; background: #238636; transition: width 0.2s; }
   .progress span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; }

@@ -6,6 +6,8 @@
  *  前端只负责调用，推理全部在 Python GPU 上跑
  */
 
+import { ui } from './state.svelte';
+
 export interface SamPoint {
   x: number;  // 原图坐标
   y: number;
@@ -153,11 +155,16 @@ export async function loadModel(_encoderFile: File, _decoderFile: File): Promise
     const resp = await safeFetch(`${SAM_SERVER_URL}/health`);
     const data = await resp.json();
     serverReady = data.model_loaded === true;
+    // 同步到 $state：组件的 `$derived(...)` 只认响应式依赖。
+    // 以前界面读的是 isModelLoaded()，它读的是模块级普通变量，
+    // Svelte 感知不到变化 → 连接成功了界面还是「未连接」，得关掉弹窗重开。
+    ui.samModelReady = serverReady;
     if (!serverReady) {
       throw new Error('SAM 后端服务未就绪');
     }
   } catch (e) {
     serverReady = false;
+    ui.samModelReady = false;
     throw new Error('无法连接 SAM 后端服务，请确认 Python 服务已启动');
   }
 }
