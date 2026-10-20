@@ -4,8 +4,10 @@
     name: string;
     size?: number;
     strokeWidth?: number;
+    /** 允许外部传 class（侧栏的 file-icon 之类）；以前没声明，传了会报类型错 */
+    class?: string;
   }
-  let { name, size = 18, strokeWidth = 2 }: Props = $props();
+  let { name, size = 18, strokeWidth = 2, class: klass = '' }: Props = $props();
 
   const paths: Record<string, string> = {
     // 工具
@@ -66,6 +68,7 @@
   stroke-linecap="round"
   stroke-linejoin="round"
   aria-hidden="true"
+  class={klass}
 >
   {@html paths[name] || ''}
 </svg>

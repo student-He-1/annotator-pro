@@ -49,8 +49,10 @@ export async function renderAnnotatedImage(
   ctx.drawImage(img, 0, 0);
 
   // 绘制标注（options 可能是部分覆盖，逐项取默认值）
-  const lineWidth = options.lineWidth ?? DEFAULT_VISUAL_OPTIONS.lineWidth;
-  const fontSize = options.fontSize ?? DEFAULT_VISUAL_OPTIONS.fontSize;
+  // 末尾的 `?? 数字` 是兜底：VisualExportOptions 里这两个字段是可选的，
+  // 光靠 DEFAULT_VISUAL_OPTIONS 取不出来 number（类型仍可能是 undefined）
+  const lineWidth = options.lineWidth ?? DEFAULT_VISUAL_OPTIONS.lineWidth ?? 2;
+  const fontSize = options.fontSize ?? DEFAULT_VISUAL_OPTIONS.fontSize ?? 14;
   const showLabels = options.showLabels !== false;
 
   for (const ann of annotations) {

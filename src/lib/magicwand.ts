@@ -285,7 +285,9 @@ export function magicWand(
     const scaledCanvas = typeof OffscreenCanvas !== 'undefined'
       ? new OffscreenCanvas(workWidth, workHeight)
       : Object.assign(document.createElement('canvas'), { width: workWidth, height: workHeight });
-    const scaledCtx = scaledCanvas.getContext('2d')!;
+    // OffscreenCanvas 与 HTMLCanvasElement 的 getContext 重载在联合类型上会退化成
+    // RenderContext 联合（含 ImageBitmapRenderingContext），这里按 2D 断言
+    const scaledCtx = scaledCanvas.getContext('2d') as CanvasRenderingContext2D;
     scaledCtx.drawImage(canvas, 0, 0, workWidth, workHeight);
     workImage = scaledCtx.getImageData(0, 0, workWidth, workHeight);
   }

@@ -46,7 +46,9 @@
   }
 
   const entries = $derived(
-    Object.entries(ui.shortcuts).filter(([k]) => k !== 'redoAlt')
+    // 显式标成 [string, string][]: 不然 Object.entries 的推断在某些位置会退化成 any[]，
+    // 模板里的 shortcut.split('+').map(k => ...) 就会报「k 隐式 any」
+    (Object.entries(ui.shortcuts) as [string, string][]).filter(([k]) => k !== 'redoAlt')
   );
 
   // ====== 自定义骨架模板 ======

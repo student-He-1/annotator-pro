@@ -289,7 +289,7 @@ function parseYoloV8Output(
 /**
  * 自动检测模型格式
  */
-function detectModelFormat(outputDims: number[]): 'yolov5' | 'yolov8' {
+function detectModelFormat(outputDims: readonly number[]): 'yolov5' | 'yolov8' {
   // YOLOv5: [1, num_anchors, 5+num_classes] — 3维
   // YOLOv8: [1, 4+num_classes, num_anchors] — 3维
   // 两者都是3维，通过维度比例判断

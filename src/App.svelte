@@ -70,8 +70,20 @@
   let sidebarCollapsed = $state(false);
   let propsCollapsed = $state(false);
 
-  let canvasRef = $state<InstanceType<typeof Canvas> | null>(null);
-  let statusBarRef = $state<InstanceType<typeof StatusBar> | null>(null);
+  // Svelte 5 的组件类型是 `Component`（不是类），`InstanceType<typeof Canvas>` 在类型上
+  // 不成立（T6 的存量报错就是这么来的）。这里只用到下面这些方法，显式写清楚即可。
+  interface CanvasApi {
+    getImageInfo(): string;
+    getWelcomeVisible(): boolean;
+    render(): void;
+    undo(): void;
+    redo(): void;
+    deleteSelected(): void;
+    copySelected(): void;
+  }
+  let canvasRef = $state<CanvasApi | null>(null);
+  // StatusBar 没有任何导出，类型上只当「有实例」用（没有地方读它的成员）
+  let statusBarRef = $state<any>(null);
 
   // 打开新弹窗时关闭所有其他弹窗，避免弹窗堆积
   function closeAllModals() {
@@ -106,7 +118,7 @@
   // Init
   // ============================================================
   // 用 onMount 而非 $effect：loadSavedData 会写入 $state，$effect 中写入会触发自身重跑导致死循环（effect_update_depth_exceeded）
-  onMount(async () => {
+  onMount(() => {
     initLang();
     loadSavedData();
     applyTheme();

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { images, classes, showToast, ui, saveAnnotations, pushHistory, captureUndoBaseline } from '$lib/state.svelte';
+  import { images, classes, showToast, ui, saveAnnotations, pushHistory, captureUndoBaseline, imageModified } from '$lib/state.svelte';
   import { batchChangeClass, batchDeleteClass, batchDeleteAll, copyToAllSubsequent } from '$lib/state.svelte';
 
   interface Props {
@@ -120,6 +120,9 @@
     }
     if (count > 0) {
       showToast('已删除 ' + count + ' 个标签', 'success');
+      // 每张被改的图都要置脏。不能用 markModified()：它只标「当前图片」，
+      // 批量改的往往不是当前这张 → 状态栏永远显示「已保存」（等价于谎报已存）。
+      for (const n of changed) imageModified[n] = true;
       pushHistory(changed);   // 一次批量整体进一条历史，Ctrl+Z 能整体还原
       saveAnnotations();
       onRefresh();
@@ -150,6 +153,8 @@
     }
     if (count > 0) {
       showToast('已为 ' + count + ' 张图片打上标签', 'success');
+      // 同 handleBatchDeleteLabel：逐张置脏，否则状态栏一直显示「已保存」
+      for (const n of changed) imageModified[n] = true;
       pushHistory(changed);   // 一次批量整体进一条历史，Ctrl+Z 能整体还原
       saveAnnotations();
       onRefresh();

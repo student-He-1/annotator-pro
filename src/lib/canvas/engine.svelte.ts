@@ -86,11 +86,11 @@ function pointInPolygon(px: number, py: number, points: Point[]): boolean {
   return inside;
 }
 
-export function hitTestHandle(imgX: number, imgY: number): ui.dragHandle | null {
+export function hitTestHandle(imgX: number, imgY: number): DragHandle | null {
   if (!ui.selectedAnnotation || ui.selectedAnnotation.type !== 'rect') return null;
   const ann = ui.selectedAnnotation as RectAnnotation;
   const handleSize = 8 / ui.zoom;
-  const handles: ui.dragHandle[] = [
+  const handles: DragHandle[] = [
     { id: 'tl', x: ann.x, y: ann.y },
     { id: 'tr', x: ann.x + ann.w, y: ann.y },
     { id: 'bl', x: ann.x, y: ann.y + ann.h },

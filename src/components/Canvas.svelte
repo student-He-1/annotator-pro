@@ -80,6 +80,7 @@
     loadedKey = key;
     // 换图：丢掉上一张的候选和 SAM3 的 embed 缓存（掩膜本体按 name 存在 store 里，不受影响）
     onImageSwitched();
+    wandCache = null;   // 上一张的整图 ImageData（可能十几 MB）没必要留着
 
     const token = ++loadToken;  // 当前这次加载的编号
     // 加载期间不置空 currentImage，也不清屏 —— 保留上一帧底图，界面更连贯。
@@ -124,6 +125,25 @@
   // ============================================================
   let dragStartPos: { x: number; y: number } | null = null;
   let mouseStartImg: { x: number; y: number } | null = null;
+
+  /** 魔术棒的整图 ImageData 缓存（T2）。
+   *  以前每点一次都 `createElement + drawImage + getImageData` 整图 ——
+   *  2000×2000 就是 16 MB 拷贝，连点第二次照样 1~3 s。
+   *  现在按「src + 尺寸」缓存一张；切图时清掉（别让 16 MB 一直挂着）。 */
+  let wandCache: { key: string; data: ImageData } | null = null;
+  function getWandImageData(img: HTMLImageElement): ImageData {
+    const key = `${img.src}_${img.width}x${img.height}`;
+    if (wandCache && wandCache.key === key) return wandCache.data;
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    // willReadFrequently：告诉浏览器这张画布会被反复读回，避免它走 GPU 后备存储
+    const g = c.getContext('2d', { willReadFrequently: true })!;
+    g.drawImage(img, 0, 0);
+    const data = g.getImageData(0, 0, img.width, img.height);
+    wandCache = { key, data };
+    return data;
+  }
   // SAM 工具：记录 mousedown 起点，mouseup 判断点击/拖拽
   let samStart: { x: number; y: number; shift: boolean } | null = null;
   // SAM 拖拽框可视化（屏幕像素坐标）
@@ -274,13 +294,8 @@
     if (ui.currentTool === 'magicwand') {
       if (!ui.currentImage) return;
       const img = ui.currentImage;
-      // 获取原始图片的 ImageData
-      const tmpCanvas = document.createElement('canvas');
-      tmpCanvas.width = img.width;
-      tmpCanvas.height = img.height;
-      const tmpCtx = tmpCanvas.getContext('2d')!;
-      tmpCtx.drawImage(img, 0, 0);
-      const imageData = tmpCtx.getImageData(0, 0, img.width, img.height);
+      // 整图 ImageData 走缓存（第二次点同一个位置不再重扫整图）
+      const imageData = getWandImageData(img);
 
       // 调用魔术棒
       const points = magicWand(imageData, Math.round(imgPos.x), Math.round(imgPos.y), {
@@ -1053,7 +1068,10 @@
   // ============================================================
   // Expose
   // ============================================================
-  export { handleMouseDown, handleMouseMove, handleMouseUp, handleDoubleClick, handleWheel, handleContextMenu, handleKeyDown, undo, redo, deleteSelected, copySelected, fitToScreen };
+  // 注意：`render` 必须一起导出 —— App 里有 `canvasRef?.render()`（LabelMe 导入后重画）。
+  // 以前没导出，那行在运行时是「canvasRef.render is not a function」，
+  // 被 try/catch 吞成「导入失败」，直到 T6 清类型错才暴露出来。
+  export { handleMouseDown, handleMouseMove, handleMouseUp, handleDoubleClick, handleWheel, handleContextMenu, handleKeyDown, undo, redo, deleteSelected, copySelected, fitToScreen, render };
 </script>
 
 <svelte:window onkeydown={handleKeyDown} onmouseup={handleWindowMouseUp} onmousemove={handleWindowMouseMove} />
