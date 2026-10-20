@@ -327,7 +327,7 @@
     box-shadow: var(--shadow-md);
     font-weight: var(--weight-medium);
   }
-  .tool-btn:hover .tooltip, .icon-btn:hover .tooltip {
+  .tool-btn:hover .tooltip {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }

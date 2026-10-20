@@ -40,7 +40,6 @@ export const ui = $state({
   recordingShortcut: null as string | null,
   exportFormat: 'voc' as ExportFormat,
   skeletonId: 'none',
-  nextTrackId: 1,
   magicWandTolerance: 32,
   magicWandContiguous: true,
   magicWandSimplify: 3,
@@ -225,12 +224,6 @@ export function isModified(): boolean {
   if (ui.currentImageIndex < 0) return false;
   const name = images[ui.currentImageIndex]?.name;
   return name ? !!imageModified[name] : false;
-}
-
-export function clearModified() {
-  if (ui.currentImageIndex < 0) return;
-  const name = images[ui.currentImageIndex]?.name;
-  if (name) imageModified[name] = false;
 }
 
 // ============================================================

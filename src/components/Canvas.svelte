@@ -7,7 +7,7 @@
     addAnnotation, deleteAnnotation, getActiveClass, getNextAnnotationId,
     copyAllToNextImage, copySelectedToNextImage,
     canUndo, canRedo, classColors, COLORS, classes,
-    imageModified, saveAnnotations, clearModified,
+    imageModified, saveAnnotations,
     captureUndoBaseline, getUndoBaseline, saveAnnotationsNow, applySnapshot,
   } from '$lib/state.svelte';
   import {
@@ -123,9 +123,6 @@
   // ============================================================
   // Mouse Events
   // ============================================================
-  let dragStartPos: { x: number; y: number } | null = null;
-  let mouseStartImg: { x: number; y: number } | null = null;
-
   /** 魔术棒的整图 ImageData 缓存（T2）。
    *  以前每点一次都 `createElement + drawImage + getImageData` 整图 ——
    *  2000×2000 就是 16 MB 拷贝，连点第二次照样 1~3 s。
@@ -190,7 +187,6 @@
     if (ui.imageLoading) return;   // 新图还没 decode 完，此时坐标基准还是上一张，禁止交互
 
     const imgPos = screenToImage(e.clientX, e.clientY);
-    mouseStartImg = imgPos;
 
     // 分割模式：之后的鼠标逻辑全归分割模式（原有的检测分支不重排、不改条件）
     if (ui.workMode === 'segmentation') {

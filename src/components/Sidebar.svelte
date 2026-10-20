@@ -181,9 +181,6 @@
     overflow: hidden;
   }
   .import-buttons .btn-sm :global(svg) { flex: 0 0 auto; }
-  .import-buttons .btn-sm span, .import-buttons .btn-sm :global(.label) {
-    overflow: hidden; text-overflow: clip;
-  }
   .import-buttons .btn-sm:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
@@ -233,8 +230,9 @@
     border-left-color: var(--accent-blue);
     box-shadow: inset 0 0 0 1px var(--border-light);
   }
-  .file-icon { flex-shrink: 0; color: var(--text-muted); }
-  .file-item.active .file-icon { color: var(--accent-blue); }
+  /* Icon 组件把 class 落在它内部的 <svg> 上，Svelte 的静态检查看不到 → 用 :global */
+  :global(.file-icon) { flex-shrink: 0; color: var(--text-muted); }
+  :global(.file-item.active .file-icon) { color: var(--accent-blue); }
   .file-name {
     flex: 1; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;

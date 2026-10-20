@@ -763,7 +763,7 @@
     margin-bottom: 8px; font-size: var(--text-sm);
   }
   .row label { color: var(--text-secondary); font-size: var(--text-xs); }
-  .row select, .row input {
+  .row select {
     width: 100px; padding: 5px 8px;
     background: var(--bg-primary);
     border: 1px solid var(--border);
@@ -773,7 +773,7 @@
     font-family: var(--font-mono);
     transition: all var(--transition-fast);
   }
-  .row select:focus, .row input:focus {
+  .row select:focus {
     border-color: var(--accent-blue);
     box-shadow: 0 0 0 2px rgba(77,163,255,0.15);
   }

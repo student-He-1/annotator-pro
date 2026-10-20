@@ -7,7 +7,7 @@
     applyTheme, toggleTheme,
     getImagesWithAnnotations, getTotalLabelCount,
     classColors as colors, getClassColor, pushHistory,
-    annotations, markModified, clearModified, imageModified, forgetUndoBaseline,
+    annotations, markModified, imageModified, forgetUndoBaseline,
   } from './lib/state.svelte';
   import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask, formatDropsKeypoints, formatLabel } from '$lib/export/formats';
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
@@ -1315,14 +1315,6 @@
     border-color: var(--accent-blue);
     transform: translateY(-4px);
     box-shadow: 0 8px 24px rgba(88,166,255,0.2);
-  }
-  .mode-card.disabled {
-    opacity: 0.4; cursor: not-allowed;
-  }
-  .mode-card.disabled:hover {
-    border-color: var(--border);
-    transform: none;
-    box-shadow: none;
   }
   .mode-icon {
     font-size: 40px;

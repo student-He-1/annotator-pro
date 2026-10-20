@@ -218,16 +218,24 @@
         <h4>1. 加载模型</h4>
         <div class="file-row">
           <label class="file-label">
-            <span>模型文件 (.onnx)</span>
-            <input type="file" accept=".onnx" onchange={handleModelFile} />
-            <span class="file-name">{modelFile?.name || '未选择'}</span>
+            <span class="file-caption">模型文件 (.onnx)</span>
+            <!-- 原生 input 视觉隐藏、靠 label 触发：否则浏览器自带「选择文件 未选择文件」一行，
+                 和下面自绘的文件名重复（T4） -->
+            <input class="file-input" type="file" accept=".onnx" onchange={handleModelFile} />
+            <span class="file-pick">
+              <span class="file-btn">选择文件</span>
+              <span class="file-name">{modelFile?.name || '未选择'}</span>
+            </span>
           </label>
         </div>
         <div class="file-row">
           <label class="file-label">
-            <span>类别文件 (.names/.txt，可选)</span>
-            <input type="file" accept=".names,.txt" onchange={handleNamesFile} />
-            <span class="file-name">{namesFile?.name || '默认 COCO 80类'}</span>
+            <span class="file-caption">类别文件 (.names/.txt，可选)</span>
+            <input class="file-input" type="file" accept=".names,.txt" onchange={handleNamesFile} />
+            <span class="file-pick">
+              <span class="file-btn">选择文件</span>
+              <span class="file-name">{namesFile?.name || '默认 COCO 80类'}</span>
+            </span>
           </label>
         </div>
         <button class="btn primary" onclick={handleLoadModel} disabled={!modelFile || isRunning}>
@@ -327,11 +335,23 @@
     display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-primary);
     cursor: pointer;
   }
-  .file-label input[type="file"] {
-    padding: 6px; background: var(--bg-primary); border: 1px solid var(--border);
-    border-radius: 4px; color: var(--text-primary); font-size: 12px;
+  /* 原生 file input 视觉隐藏但仍可键盘聚焦（label 点一下就能选文件） */
+  .file-input {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); border: 0;
   }
-  .file-name { font-size: 11px; color: var(--text-muted); font-family: monospace; }
+  .file-pick { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .file-btn {
+    flex: none; padding: 5px 10px; font-size: 12px;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text-primary);
+  }
+  .file-label:hover .file-btn { background: var(--bg-hover); border-color: var(--border-light); }
+  .file-label:focus-within .file-btn { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+  .file-name {
+    font-size: 11px; color: var(--text-muted); font-family: monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
   .model-status {
     margin-top: 8px; padding: 8px 12px; background: rgba(35,134,54,0.15);
     border: 1px solid #238636; border-radius: 4px; font-size: 12px; color: #3fb950;
