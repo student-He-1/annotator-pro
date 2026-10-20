@@ -165,16 +165,24 @@
     display: flex; gap: 8px;
   }
   .import-buttons .btn-sm {
-    flex: 1; text-align: center; padding: 8px 10px;
+    flex: 1 1 auto; min-width: 0; text-align: center; padding: 8px 6px;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
     color: var(--text-secondary);
     border-radius: var(--radius-md);
     cursor: pointer;
-    font-size: var(--text-xs);
+    font-size: 10.5px;
     font-weight: var(--weight-medium);
     transition: all var(--transition-fast);
-    display: flex; align-items: center; justify-content: center; gap: 6px;
+    display: flex; align-items: center; justify-content: center; gap: 4px;
+    /* 强制一行：图标在左、文字在右。以前「导入文件夹」在 260px 宽的侧栏里
+       被挤成两行（而且 folder 图标没定义，直接是空的） */
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .import-buttons .btn-sm :global(svg) { flex: 0 0 auto; }
+  .import-buttons .btn-sm span, .import-buttons .btn-sm :global(.label) {
+    overflow: hidden; text-overflow: clip;
   }
   .import-buttons .btn-sm:hover {
     background: var(--bg-hover);
@@ -186,7 +194,7 @@
   /* 清空按钮不参与平分宽度，保持紧凑 */
   .import-buttons .btn-sm.btn-clear {
     flex: 0 0 auto;
-    padding: 8px 10px;
+    padding: 8px 8px;
     color: var(--text-muted);
   }
   .import-buttons .btn-sm.btn-clear:hover {
