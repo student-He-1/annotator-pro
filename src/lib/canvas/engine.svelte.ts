@@ -3,6 +3,7 @@ import {
   ui, getCurrentAnnotations, getClassColor,
 } from '../state.svelte';
 import { getSkeleton, skeletonFor } from '../skeletons';
+import { getSegOverlay } from '../segmentation/store.svelte';
 import type { Annotation, Point, DragHandle, RectAnnotation, RotatedAnnotation, KeypointAnnotation } from '../types';
 
 let ctx: CanvasRenderingContext2D;
@@ -164,8 +165,21 @@ export function render() {
   // 避免出现「底片是上一张、轮廓是这一张」的错配残影（删图后停留 2~3 秒的现象）。
   if (ui.imageLoading) { ctx.restore(); return; }
 
-  if (ui.workMode !== 'classification') {
+  if (ui.workMode === 'detection') {
     getCurrentAnnotations().forEach(ann => drawAnnotation(ann, ann === ui.selectedAnnotation));
+  }
+
+  // 分割模式：像素级掩膜 overlay。
+  // 整张 overlay 是离屏拼好的（见 segmentation/overlay.ts），这里只做一次 drawImage；
+  // imageSmoothingEnabled 必须关掉，否则缩放后边缘会混出「不存在的颜色」。
+  if (ui.workMode === 'segmentation') {
+    const segOverlay = getSegOverlay();
+    if (segOverlay) {
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(segOverlay, -hw, -hh, imgW, imgH);
+      ctx.restore();
+    }
   }
 
   if (ui.isDrawing && ui.drawingAnnotation) {

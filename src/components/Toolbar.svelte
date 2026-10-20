@@ -1,6 +1,7 @@
 <script lang="ts">
   import { t } from '$lib/i18n.svelte';
   import { ui, setTool, canUndo, canRedo, isModified } from '$lib/state.svelte';
+  import { canUndoMask, canRedoMask } from '$lib/segmentation/store.svelte';
   import { fitToScreen } from '$lib/canvas/engine.svelte';
   import Icon from './Icon.svelte';
 
@@ -44,6 +45,14 @@
     { id: 'sam', icon: 'sam', label: 'samTool', key: 'M' },
   ];
 
+  /** 分割模式的工具组（第三个模式）。
+   *  label 直接写中文：i18n 表里没有这三项，没必要为它改共用词表。 */
+  const segTools: { id: string; icon: string; label: string; key: string }[] = [
+    { id: 'seg_select', icon: 'pointer', label: '选择区域 (V)', key: 'V' },
+    { id: 'seg_text', icon: 'sam', label: '文本提示 (T)', key: 'T' },
+    { id: 'seg_point', icon: 'keypoint', label: '点提示 (B)', key: 'B' },
+  ];
+
   /** 工具栏提示里的键位跟着设置里改过的快捷键走。
    *  否则在设置里把快捷键改掉之后，工具栏还印着旧的 V/R/P，用户会以为没生效。 */
   function keyLabel(id: string, fallback: string): string {
@@ -62,32 +71,47 @@
   </button>
   <div class="divider"></div>
 
-  {#each tools as tool}
-    {#if ui.workMode !== 'classification' || tool.id === 'select'}
-    <button class="tool-btn" class:active={ui.currentTool === tool.id} data-tool={tool.id}
-      onclick={() => setTool(tool.id as any)} title={`${t(tool.label)} (${keyLabel(tool.id, tool.key)})`}>
-      <Icon name={tool.icon} size={17} />
-      <span class="tooltip">{t(tool.label)} {keyLabel(tool.id, tool.key)}</span>
-    </button>
-    {/if}
-  {/each}
+  {#if ui.workMode === 'segmentation'}
+    {#each segTools as tool}
+      <button class="tool-btn" class:active={ui.currentTool === tool.id} data-tool={tool.id}
+        onclick={() => setTool(tool.id as any)} title={tool.label}>
+        <Icon name={tool.icon} size={17} />
+        <span class="tooltip">{tool.label}</span>
+      </button>
+    {/each}
+  {:else}
+    {#each tools as tool}
+      {#if ui.workMode === 'detection' || tool.id === 'select'}
+      <button class="tool-btn" class:active={ui.currentTool === tool.id} data-tool={tool.id}
+        onclick={() => setTool(tool.id as any)} title={`${t(tool.label)} (${keyLabel(tool.id, tool.key)})`}>
+        <Icon name={tool.icon} size={17} />
+        <span class="tooltip">{t(tool.label)} {keyLabel(tool.id, tool.key)}</span>
+      </button>
+      {/if}
+    {/each}
+  {/if}
 
   <div class="divider"></div>
-  <button class="icon-btn" onclick={props.onUndo} title={`${t('undo')} (Ctrl+Z)`} disabled={!canUndo()}>
+  <button class="icon-btn" onclick={props.onUndo} title={`${t('undo')} (Ctrl+Z)`}
+    disabled={ui.workMode === 'segmentation' ? !canUndoMask() : !canUndo()}>
     <Icon name="undo" size={16} />
   </button>
-  <button class="icon-btn" onclick={props.onRedo} title={`${t('redo')} (Ctrl+Y)`} disabled={!canRedo()}>
+  <button class="icon-btn" onclick={props.onRedo} title={`${t('redo')} (Ctrl+Y)`}
+    disabled={ui.workMode === 'segmentation' ? !canRedoMask() : !canRedo()}>
     <Icon name="redo" size={16} />
   </button>
 
   <div class="divider"></div>
   <!-- 保存标注：自动保存照旧，这个按钮 = 立刻存 + 给一个明确反馈。
-       未保存时按钮变黄，和状态栏的「未保存」是同一份数据。 -->
+       未保存时按钮变黄，和状态栏的「未保存」是同一份数据。
+       分割模式的掩膜不进 localStorage，这个按钮对它没有意义 → 隐藏。 -->
+  {#if ui.workMode !== 'segmentation'}
   <button class="icon-btn save-annot-btn" class:dirty={isModified()}
     onclick={props.onSaveAnnotations}
     title={`保存标注 (Ctrl+S)${isModified() ? ' · 有未保存改动' : ' · 已是最新'}`}>
     <Icon name="save-check" size={16} />
   </button>
+  {/if}
 
   <div class="divider"></div>
   <button class="icon-btn" onclick={props.onZoomIn} title={t('zoomIn')}>
@@ -102,7 +126,7 @@
   </button>
 
   <!-- 删除/复制只对「选中的标注」有意义；分类模式里 annotation 永远是空的，藏起来免得点了没反应 -->
-  {#if ui.workMode !== 'classification'}
+  {#if ui.workMode === 'detection'}
     <div class="divider"></div>
     <button class="icon-btn" onclick={props.onDelete} title={t('delete')}>
       <Icon name="trash" size={16} />
@@ -114,11 +138,13 @@
 
   <div class="divider"></div>
   <button class="icon-btn" onclick={props.onExport}
-    title={ui.workMode === 'classification' ? '导出分类标签 CSV' : t('batchExportBtn')}>
+    title={ui.workMode === 'classification'
+      ? '导出分类标签 CSV'
+      : ui.workMode === 'segmentation' ? '导出分割掩膜' : t('batchExportBtn')}>
     <Icon name="download" size={16} />
   </button>
-  <!-- 导入 VOC/COCO/YOLO 是往 annotations 里写框，分类模式下导入进来也看不见，藏掉 -->
-  {#if ui.workMode !== 'classification'}
+  <!-- 导入 VOC/COCO/YOLO 是往 annotations 里写框，分类模式/分割模式下导入进来也看不见，藏掉 -->
+  {#if ui.workMode === 'detection'}
     <button class="icon-btn" onclick={props.onImport} title={t('importSuccess')}>
       <Icon name="upload" size={16} />
     </button>
@@ -133,10 +159,13 @@
   </button>
 
   <div class="divider"></div>
+  <!-- 数据集划分 / 批量操作都是按 annotations 算的，分割模式下它们看到的永远是 0 → 隐藏 -->
+  {#if ui.workMode !== 'segmentation'}
   <button class="icon-btn" onclick={props.onDatasetSplit} title="数据集划分">
     <Icon name="pie-chart" size={16} />
   </button>
-  {#if ui.workMode !== 'classification'}
+  {/if}
+  {#if ui.workMode === 'detection'}
   <button class="icon-btn" onclick={props.onQualityCheck} title="标注质量校验">
     <Icon name="check" size={16} />
   </button>
@@ -153,9 +182,11 @@
   <button class="icon-btn" onclick={props.onImageQuality} title="图片质量筛查">
     <Icon name="image" size={16} />
   </button>
+  {#if ui.workMode !== 'segmentation'}
   <button class="icon-btn" onclick={props.onBatchOps} title="批量操作">
     <Icon name="layers" size={16} />
   </button>
+  {/if}
 
   <div class="divider"></div>
   <button class="icon-btn" onclick={props.onSettings} title={t('settings')}>

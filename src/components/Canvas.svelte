@@ -19,6 +19,11 @@
   import { magicWand } from '$lib/magicwand';
   import { segment, isModelLoaded, clearCache as clearSamCache } from '$lib/sam';
   import { skeletonFor, getSkeleton } from '$lib/skeletons';
+  // 分割模式（第三个模式）的交互全部走这里，检测模式的分支一行不动
+  import {
+    runPointPrompt, hitTestRegion, selectRegion, clearRegionSelection, deleteSelectedRegion,
+    undoMask, redoMask, onImageSwitched, clearCandidates,
+  } from '$lib/segmentation/store.svelte';
 
   let canvasEl: HTMLCanvasElement;
   let containerEl: HTMLDivElement;
@@ -71,6 +76,8 @@
     // 否则每次都会重新置空 + 重载，导入过程中画面会不停闪白。
     if (loadedKey === key) return;
     loadedKey = key;
+    // 换图：丢掉上一张的候选和 SAM3 的 embed 缓存（掩膜本体按 name 存在 store 里，不受影响）
+    onImageSwitched();
 
     const token = ++loadToken;  // 当前这次加载的编号
     // 加载期间不置空 currentImage，也不清屏 —— 保留上一帧底图，界面更连贯。
@@ -162,6 +169,12 @@
 
     const imgPos = screenToImage(e.clientX, e.clientY);
     mouseStartImg = imgPos;
+
+    // 分割模式：之后的鼠标逻辑全归分割模式（原有的检测分支不重排、不改条件）
+    if (ui.workMode === 'segmentation') {
+      segMouseDown(imgPos, e);
+      return;
+    }
 
     // SAM 工具：记录起点，mouseup 时判断点击还是拖拽
     if (ui.currentTool === 'sam') {
@@ -349,6 +362,72 @@
     }
   }
 
+  // ============================================================
+  // 图像分割模式（第三个模式）的交互
+  // ============================================================
+  /** 分割模式的 mousedown。
+   *  平移/缩放（中键、Alt+拖、滚轮）在上面的公共分支里已经处理过，这里只管区域交互。 */
+  function segMouseDown(imgPos: { x: number; y: number }, e: MouseEvent) {
+    if (ui.currentTool === 'seg_point') {
+      // 点提示：Shift = 负点（告诉模型「这里不是」）
+      void runPointPrompt(imgPos.x, imgPos.y, e.shiftKey ? 0 : 1);
+      return;
+    }
+    // 其余工具：点中哪个区域就选中哪个（查表，不做几何判断），点空白取消选中
+    const ord = hitTestRegion(imgPos.x, imgPos.y);
+    if (ord) selectRegion(ord); else clearRegionSelection();
+    render();
+  }
+
+  /** 分割模式的键盘。检测模式的撤销栈、Delete、工具键都在另一条分支里，互不影响。
+   *  Ctrl+Z 走**掩膜独立撤销栈**（ui.history 里根本没有掩膜，串过去会撤错东西）。 */
+  function segKeyDown(e: KeyboardEvent) {
+    const key = e.key.toLowerCase();
+    const mod = e.ctrlKey || e.metaKey;
+
+    if (mod && key === 'z') {
+      e.preventDefault();
+      const ok = e.shiftKey ? redoMask() : undoMask();
+      if (ok) render();
+      return;
+    }
+    if (mod && key === 'y') {
+      e.preventDefault();
+      if (redoMask()) render();
+      return;
+    }
+    if (mod && key === 's') {
+      e.preventDefault();
+      // 掩膜不进 localStorage（5 MB 装不下），Ctrl+S 只存检测/分类标注 → 别说谎
+      showToast('掩膜只随工程文件保存：请用工具栏的「保存工程」', 'info');
+      return;
+    }
+    if (matchShortcut(e, ui.shortcuts.zoomIn)) { e.preventDefault(); ui.zoom = Math.min(10, ui.zoom * 1.2); clampPan(); render(); return; }
+    if (matchShortcut(e, ui.shortcuts.zoomOut)) { e.preventDefault(); ui.zoom = Math.max(getMinZoom(), ui.zoom / 1.2); clampPan(); render(); return; }
+    if (matchShortcut(e, ui.shortcuts.fit)) { e.preventDefault(); fitToScreen(); render(); return; }
+
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (ui.segSelectedRegion) {
+        e.preventDefault();
+        deleteSelectedRegion();
+        render();
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      clearCandidates();
+      clearRegionSelection();
+      setTool('seg_select');
+      render();
+      return;
+    }
+    if (mod || e.altKey) return;
+    // 分割模式的工具键（没有塞进 ShortcutMap：那是设置弹窗里给检测模式用的键表）
+    if (key === 'v') { setTool('seg_select'); return; }
+    if (key === 't') { setTool('seg_text'); return; }
+    if (key === 'b') { setTool('seg_point'); return; }
+  }
+
   function handleMouseMove(e: MouseEvent) {
     if (freePanning) {
       // 自由平移模式：鼠标移动即平移，以 panStart 为基准
@@ -369,6 +448,9 @@
     ui.mouseImgX = imgPos.x;
     ui.mouseImgY = imgPos.y;
     ui.mouseOverCanvas = true;
+
+    // 分割模式：不做 hover 预览/拖框，鼠标移动只更新状态栏坐标
+    if (ui.workMode === 'segmentation') return;
 
     // SAM 工具：拖拽中更新框选可视化
     if (samStart) {
@@ -444,6 +526,9 @@
   function handleMouseUp(e: MouseEvent) {
     if (isPanning) { isPanning = false; return; }
 
+    // 分割模式：没有拖拽手势要收尾（点提示是异步的，不在这里等）
+    if (ui.workMode === 'segmentation') return;
+
     // SAM 工具：判断点击还是拖拽，运行分割
     if (samStart && ui.currentTool === 'sam') {
       const imgPos = screenToImage(e.clientX, e.clientY);
@@ -516,6 +601,12 @@
   }
 
   function handleDoubleClick(e: MouseEvent) {
+    if (ui.workMode === 'segmentation') {
+      const p = screenToImage(e.clientX, e.clientY);
+      const ord = hitTestRegion(p.x, p.y);
+      if (ord) { selectRegion(ord); render(); }
+      return;
+    }
     if (ui.currentTool === 'polygon' && ui.polygonPoints.length >= 3) {
       finishPolygon();
       return;
@@ -565,6 +656,11 @@
       return;
     }
     const imgPos = screenToImage(e.clientX, e.clientY);
+    if (ui.workMode === 'segmentation') {
+      const ord = hitTestRegion(imgPos.x, imgPos.y);
+      if (ord) { selectRegion(ord); render(); }
+      return;
+    }
     const hit = hitTestAnnotation(imgPos.x, imgPos.y);
     if (hit) {
       selectAnnotation(hit);
@@ -695,6 +791,12 @@
       return;
     }
 
+    // 分割模式：整套键位分流，检测模式的撤销/删除/工具键一个都不走
+    if (ui.workMode === 'segmentation') {
+      segKeyDown(e);
+      return;
+    }
+
     if (matchShortcut(e, ui.shortcuts.undo)) { e.preventDefault(); undo(); return; }
     if (matchShortcut(e, ui.shortcuts.redo) || matchShortcut(e, ui.shortcuts.redoAlt)) { e.preventDefault(); redo(); return; }
 
@@ -779,6 +881,7 @@
   }
 
   function deleteSelected() {
+    if (ui.workMode === 'segmentation') { deleteSelectedRegion(); render(); return; }
     if (ui.selectedAnnotation) {
       deleteAnnotation(ui.selectedAnnotation);
       pushHistory();
@@ -788,6 +891,7 @@
   }
 
   function copySelected() {
+    if (ui.workMode === 'segmentation') return;   // 掩膜不做「复制一份」：叠加语义不明确
     if (!ui.selectedAnnotation) return;
     const copy = JSON.parse(JSON.stringify(ui.selectedAnnotation));
     copy.id = getNextAnnotationId();
@@ -830,6 +934,11 @@
   }
 
   function undo() {
+    // 分割模式：走掩膜独立撤销栈
+    if (ui.workMode === 'segmentation') {
+      if (undoMask()) render();
+      return;
+    }
     if (ui.historyIndex < 0) return;
     // cur = 这次要撤销掉的那一步；一条记录可能涉及多张图（批量操作）
     const cur = ui.history[ui.historyIndex];
@@ -851,6 +960,10 @@
   }
 
   function redo() {
+    if (ui.workMode === 'segmentation') {
+      if (redoMask()) render();
+      return;
+    }
     if (ui.historyIndex >= ui.history.length - 1) return;
     ui.historyIndex = ui.historyIndex + 1;
     const entry = ui.history[ui.historyIndex];

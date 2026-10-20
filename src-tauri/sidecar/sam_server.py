@@ -81,23 +81,27 @@ class PredictRequest(BaseModel):
     y: float
     label: int = 1  # 1=正点(前景), 0=负点(背景)
     multimask: bool = True
+    return_mask: bool = False  # 可选：同时返回像素级掩膜（默认关，老前端行为不变）
 
 
 class PredictResponse(BaseModel):
     polygon: list[list[float]]  # [[x, y], [x, y], ...]
     score: float
     elapsed_ms: float
+    mask_png: Optional[str] = None  # base64 PNG，单实例二值图(0/255)，原图分辨率
 
 
 class PcsRequest(BaseModel):
     image_id: str
     text: str
     confidence_threshold: float = 0.3
+    return_mask: bool = False  # 可选：同时返回像素级掩膜（默认关，老前端行为不变）
 
 
 class PcsResponse(BaseModel):
     instances: list  # [{polygon, score, box}]
     elapsed_ms: float
+    mask_png: Optional[str] = None  # base64 PNG，索引图(mode='L')：值 k = instances[k-1]，k 从 1 开始，0 为背景
 
 
 class PoseRequest(BaseModel):
@@ -164,6 +168,25 @@ def embed(req: EmbedRequest):
     return EmbedResponse(image_id=image_id, width=w, height=h, elapsed_ms=elapsed)
 
 
+# ====== 掩膜 PNG 合成（可选返回，默认不触发） ======
+def _png_b64(uint8_img: np.ndarray) -> str:
+    """uint8 单通道图 -> base64 PNG（索引图 / 二值图共用）"""
+    buf = io.BytesIO()
+    Image.fromarray(uint8_img, mode="L").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _mask_hw(state, fallback_shape) -> tuple[int, int]:
+    """掩膜画布尺寸：优先 state 的 original_height/width（原图分辨率），
+    取不到或与掩膜 shape 不一致时用掩膜自身 shape 兜底。"""
+    h = w = None
+    if isinstance(state, dict):
+        h, w = state.get("original_height"), state.get("original_width")
+    if h is None or w is None or (int(h), int(w)) != tuple(fallback_shape[:2]):
+        return int(fallback_shape[0]), int(fallback_shape[1])
+    return int(h), int(w)
+
+
 # ====== 接口：点预测 ======
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
@@ -201,8 +224,11 @@ def predict(req: PredictRequest):
         approx = cv2.approxPolyDP(largest, epsilon, True)
         polygon = approx.reshape(-1, 2).tolist()
 
+    # 可选：单实例二值掩膜（0/255）。predict_inst 已按 state 的 original_hw 上采样，原图分辨率、不 resize
+    mask_png = _png_b64(mask_uint8) if req.return_mask else None
+
     print(f"[SAM Server] predict: ({req.x:.0f},{req.y:.0f}), score={score_val:.3f}, {elapsed:.0f}ms")
-    return PredictResponse(polygon=polygon, score=score_val, elapsed_ms=elapsed)
+    return PredictResponse(polygon=polygon, score=score_val, elapsed_ms=elapsed, mask_png=mask_png)
 
 
 # ====== 接口：文本提示分割（PCS） ======
@@ -226,6 +252,7 @@ def pcs(req: PcsRequest):
     scores = st["scores"].float().cpu().numpy()  # (N,)
 
     instances = []
+    kept_masks: list[np.ndarray] = []  # 与 instances 同序：过滤后的掩膜，索引图编号必须跟它对齐
     for i in range(len(masks)):
         mask_uint8 = masks[i][0].astype(np.uint8) * 255
         contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -241,9 +268,19 @@ def pcs(req: PcsRequest):
                 "score": float(scores[i]),
                 "box": [float(v) for v in boxes[i].tolist()],
             })
+            kept_masks.append(masks[i][0])
+
+    # 可选：索引图（值 k = instances[k-1]，0 为背景），原图分辨率、不 resize
+    mask_png = None
+    if req.return_mask and kept_masks:
+        h, w = _mask_hw(state, kept_masks[0].shape)
+        idx = np.zeros((h, w), np.uint8)
+        for k, m in enumerate(kept_masks):
+            idx[m] = k + 1  # 后写覆盖先写 = 序号大的实例优先
+        mask_png = _png_b64(idx)
 
     print(f"[SAM Server] pcs: '{req.text}' -> {len(instances)} instances, {elapsed:.0f}ms")
-    return PcsResponse(instances=instances, elapsed_ms=elapsed)
+    return PcsResponse(instances=instances, elapsed_ms=elapsed, mask_png=mask_png)
 
 
 # ====== 接口：人体 17 点（YOLOv8n-pose，懒加载） ======
@@ -340,7 +377,8 @@ def health():
         "model_loaded": model is not None,
         "pose_loaded": pose_model is not None,
         "face_loaded": face_model is not None,
-        "cached_images": len(state_cache)
+        "cached_images": len(state_cache),
+        "features": ["mask"]  # 可选能力声明：支持 return_mask 像素级掩膜
     }
 
 

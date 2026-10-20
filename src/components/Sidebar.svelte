@@ -22,6 +22,11 @@
 
   const statsText = $derived.by(() => {
     if (images.length === 0) return '';
+    if (ui.workMode === 'segmentation') {
+      ui.maskRev;   // 掩膜数据在 segmentation/store 里，读这个版本号建立响应式依赖
+      const n = Object.keys(ui.maskCounts || {}).filter(k => (ui.maskCounts[k] || 0) > 0).length;
+      return `已分割 ${n} 张 / 共 ${images.length} 张 · ${ui.maskTotal || 0} 个区域`;
+    }
     if (ui.workMode === 'classification') {
       // 统计口径统一走 state 里的按模式取数函数，别在这里再写一份
       const labeled = getLabeledImageCount();
@@ -90,12 +95,14 @@
         {#each visibleImages as img, i (img.name)}
           {@const idx = startIndex + i}
           <div class="file-item" class:active={idx === ui.currentImageIndex}
-            class:has-annotations={ui.workMode !== 'classification' && (annotations[img.name]?.length || 0) > 0}
+            class:has-annotations={ui.workMode === 'detection' && (annotations[img.name]?.length || 0) > 0}
             onclick={() => props.onSelectImage(idx)}
             style="height:{ITEM_HEIGHT}px">
             <Icon name="image" size={14} class="file-icon" />
             <span class="file-name">{img.name}</span>
-            <span class="file-badge">{ui.workMode === 'classification' ? (ui.imageLabels[img.name]?.length || 0) : (annotations[img.name]?.length || 0)}</span>
+            <span class="file-badge">{ui.workMode === 'segmentation'
+              ? (ui.maskCounts?.[img.name] || 0)
+              : ui.workMode === 'classification' ? (ui.imageLabels[img.name]?.length || 0) : (annotations[img.name]?.length || 0)}</span>
             <button class="delete-btn" onclick={(e) => { e.stopPropagation(); props.onDeleteImage(idx); }} title="删除图片">
               <Icon name="trash" size={12} />
             </button>

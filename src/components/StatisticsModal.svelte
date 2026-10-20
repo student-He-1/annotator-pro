@@ -1,6 +1,7 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t } from '$lib/i18n.svelte';
   import { images, annotations, classes, classColors, getClassColor, ui } from '$lib/state.svelte';
+  import { getImageMask, colorOfSegClass } from '$lib/segmentation/store.svelte';
   import type { Annotation } from '$lib/types';
 
   interface Props {
@@ -14,10 +15,26 @@
     let annotatedImages = 0;
     let totalAnnotations = 0;
     const classCounts: Record<string, number> = {};
-    const typeCounts: Record<string, number> = { rect: 0, polygon: 0, rotated: 0, keypoint: 0 };
+    let typeCounts: Record<string, number> = { rect: 0, polygon: 0, rotated: 0, keypoint: 0 };
     const perImage: { name: string; count: number }[] = [];
 
-    if (ui.workMode === 'classification') {
+    if (ui.workMode === 'segmentation') {
+      // 分割模式：数据在 segmentation/store（区域数由 store 同步到 ui.maskCounts）
+      ui.maskRev;
+      typeCounts = { instance: 0, stuff: 0 };
+      for (const img of images) {
+        const mask = getImageMask(img.name);
+        const n = mask?.regions.length || 0;
+        perImage.push({ name: img.name, count: n });
+        if (n > 0) annotatedImages++;
+        totalAnnotations += n;
+        for (const r of mask?.regions || []) {
+          if (r.hidden) continue;
+          classCounts[r.className] = (classCounts[r.className] || 0) + 1;
+          typeCounts[r.kind === 'stuff' ? 'stuff' : 'instance']++;
+        }
+      }
+    } else if (ui.workMode === 'classification') {
       // 分类标签统计
       for (const img of images) {
         const labels = ui.imageLabels[img.name] || [];
@@ -61,10 +78,17 @@
   // 标注类型显示名
   const typeLabels: Record<string, string> = {
     rect: '矩形框', polygon: '多边形', rotated: '旋转框', keypoint: '关键点',
+    instance: '实例区域', stuff: '整片(stuff)区域',
   };
   const typeColors: Record<string, string> = {
     rect: '#58a6ff', polygon: '#3fb950', rotated: '#d2991d', keypoint: '#f85149',
+    instance: '#58a6ff', stuff: '#3fb950',
   };
+
+  /** 类别颜色：分割模式走它自己的类别配色，别去读检测/分类的 classColors */
+  function classColorOf(className: string): string {
+    return ui.workMode === 'segmentation' ? colorOfSegClass(className) : getClassColor(className);
+  }
 </script>
 
 <div class="modal-overlay" onclick={onClose}>
@@ -115,9 +139,9 @@
             <div class="bar-list">
               {#each stats.classSorted as [className, count]}
                 <div class="bar-row">
-                  <span class="bar-name" style="color: {getClassColor(className)}">{className}</span>
+                  <span class="bar-name" style="color: {classColorOf(className)}">{className}</span>
                   <div class="bar-track">
-                    <div class="bar-fill" style="width: {(count / stats.maxClassCount * 100).toFixed(1)}%; background: {getClassColor(className)}"></div>
+                    <div class="bar-fill" style="width: {(count / stats.maxClassCount * 100).toFixed(1)}%; background: {classColorOf(className)}"></div>
                   </div>
                   <span class="bar-count">{count}</span>
                 </div>

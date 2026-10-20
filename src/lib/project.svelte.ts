@@ -5,6 +5,9 @@ import {
 } from './state.svelte';
 import { render, fitToScreen } from './canvas/engine.svelte';
 import { getAllSkeletons } from './skeletons';
+import {
+  serializeMasks, hasAnyMask, loadMasksFromProject, serializeSegSettings, loadSegSettings, markMasksSaved,
+} from './segmentation/store.svelte';
 
 const PROJECT_VERSION = '1.0';
 const RECENT_KEY = 'annotator_recent_projects';
@@ -29,6 +32,7 @@ export function buildProjectFile(name: string): ProjectFile {
     height: img.height,
   }));
 
+  const withSeg = ui.workMode === 'segmentation' || hasAnyMask();
   return {
     version: PROJECT_VERSION,
     name,
@@ -37,12 +41,16 @@ export function buildProjectFile(name: string): ProjectFile {
     images: projectImages,
     annotations: JSON.parse(JSON.stringify(annotations)),
     imageLabels: JSON.parse(JSON.stringify(ui.imageLabels)),
+    // 掩膜字段是**可选**的：检测/分类工程里没有掩膜时干脆不写，
+    // 保证旧工程的内容结构与以前完全一致（铁律 A：旧数据零改动）。
+    masks: withSeg && hasAnyMask() ? serializeMasks() : undefined,
     classes: [...classes],
     classColors: { ...classColors },
     settings: {
       exportFormat: ui.exportFormat as ExportFormat,
       skeletonId: ui.skeletonId,
       workMode: ui.workMode,
+      segmentation: withSeg ? serializeSegSettings() : undefined,
     },
   };
 }
@@ -87,6 +95,7 @@ export async function saveProjectAs() {
         filename,
         contentBase64: utf8ToBase64(content),
       });
+      if (savedPath) markMasksSaved();
       showToast(`工程已保存：${savedPath}`, 'success');
       addToRecent(savedPath, filename);
       return;
@@ -161,10 +170,18 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     Object.keys(ui.imageLabels).forEach(k => delete ui.imageLabels[k]);
     Object.assign(ui.imageLabels, (project as any).imageLabels || {});
 
+    // Restore masks（分割模式）。旧工程没有 masks 字段 → 传 undefined，等同于清空，
+    // 免得「打开一个检测工程，上一张图的掩膜还挂在画布上」。这是纯新增命名空间，碰不到 annotations。
+    loadMasksFromProject((project as any).masks);
+    loadSegSettings((project as any).settings?.segmentation);
+
     // Restore workMode
     if ((project as any).settings?.workMode) {
       ui.workMode = (project as any).settings.workMode;
       ui.showModeSelect = false;
+      if (ui.workMode === 'segmentation' && !String(ui.currentTool).startsWith('seg_')) {
+        ui.currentTool = 'seg_select';
+      }
     }
 
     // Load images - try Tauri path first, fallback to file picker

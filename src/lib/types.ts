@@ -1,8 +1,13 @@
+/** 分割模式的工程数据类型（只在分割模式用；旧工程不带这些字段） */
+import type { ProjectMask, SegmentationSettings } from './segmentation/types';
+
 /** 标注类型 */
 export type AnnotationType = 'rect' | 'polygon' | 'rotated' | 'keypoint';
 
 /** 标注工具 */
-export type ToolType = 'select' | AnnotationType | 'magicwand' | 'sam';
+export type ToolType = 'select' | AnnotationType | 'magicwand' | 'sam'
+  /** 分割模式工具（第三个模式）。前缀 seg_ 保证和上面检测模式的工具名不冲突 */
+  | 'seg_select' | 'seg_text' | 'seg_point' | 'seg_box';
 
 /** 点坐标 */
 export interface Point { x: number; y: number }
@@ -77,7 +82,9 @@ export interface ShortcutMap {
 }
 
 /** 导出格式 */
-export type ExportFormat = 'voc' | 'yolo' | 'coco' | 'coco_merged' | 'createml' | 'labelme' | 'png' | 'jpg' | 'classification_csv' | 'unet_mask';
+export type ExportFormat = 'voc' | 'yolo' | 'coco' | 'coco_merged' | 'createml' | 'labelme' | 'png' | 'jpg' | 'classification_csv' | 'unet_mask'
+  /** 分割模式的四种导出（走 lib/export/segmentation-export.ts，不进 formats.ts 的旧 case） */
+  | 'seg_coco' | 'seg_coco_merged' | 'seg_cityscapes' | 'seg_instances' | 'seg_unet';
 
 /** 语言 */
 export type Language = 'zh' | 'en';
@@ -124,12 +131,16 @@ export interface ProjectFile {
   annotations: Record<string, Annotation[]>;
   /** 分类模式的图片标签（buildProjectFile 会写，可缺省） */
   imageLabels?: Record<string, string[]>;
+  /** 分割模式的掩膜（可缺省：旧工程没有这个字段照样打开，反之亦然） */
+  masks?: Record<string, ProjectMask>;
   classes: string[];
   classColors: Record<string, string>;
   settings: {
     exportFormat: ExportFormat;
     skeletonId: string;
     /** 工程所属工作模式 */
-    workMode?: 'detection' | 'classification';
+    workMode?: 'detection' | 'classification' | 'segmentation';
+    /** 分割模式的显示/类别设置（可缺省） */
+    segmentation?: SegmentationSettings;
   };
 }

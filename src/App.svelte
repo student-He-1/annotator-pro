@@ -11,6 +11,8 @@
   } from './lib/state.svelte';
   import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask, formatDropsKeypoints, formatLabel } from '$lib/export/formats';
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
+  import { getSegExportData, getSegBatchExportData } from '$lib/export/segmentation-export';
+  import { deleteImageMask } from '$lib/segmentation/store.svelte';
   import { saveProjectAs, loadProjectFromFile } from '$lib/project.svelte';
   import { fitToScreen, render, getMinZoom, clampPan } from '$lib/canvas/engine.svelte';
   import { clearCache as clearSamCache } from '$lib/sam';
@@ -54,6 +56,7 @@
   import StatisticsModal from './components/StatisticsModal.svelte';
   import ImageQualityModal from './components/ImageQualityModal.svelte';
   import BatchOperationsModal from './components/BatchOperationsModal.svelte';
+  import SegmentationPanel from './components/SegmentationPanel.svelte';
   import { parseLabelMe } from './lib/import/labelme';
 
   let showSettings = $state(false);
@@ -90,6 +93,14 @@
   function selectMode(mode: string) {
     ui.workMode = mode as any;
     ui.showModeSelect = false;
+    // 切模式时把当前工具收敛到本模式存在的工具上，否则工具栏一个都不高亮
+    if (mode === 'segmentation') {
+      if (!String(ui.currentTool).startsWith('seg_')) ui.currentTool = 'seg_select';
+    } else if (String(ui.currentTool).startsWith('seg_')) {
+      ui.currentTool = 'select';
+    }
+    // 切模式后立刻重画：分割模式的 overlay 用另一套渲染分支（等于换了一层画布内容）
+    render();
   }
 
   // Init
@@ -361,6 +372,8 @@
     // ui.imageLabels 里：保存工程/导出 CSV 会带上幽灵条目，
     // 以后重新导入同名图片还会「继承」上一次的标签。
     delete ui.imageLabels[img.name];
+    // 掩膜也是以 name 为 key：不删就会「幽灵掩膜」，以后重新导入同名图片会继承上一次的分割结果
+    deleteImageMask(img.name);
     delete imageModified[img.name];
     // 撤销基线也一起丢掉，否则以后重新导入同名图片时，撤到底会还原成这一轮删掉的旧数据
     forgetUndoBaseline(img.name);
@@ -529,7 +542,79 @@
     }
   }
 
+  /** 导出前的通用「写一个文件」：单图走原生另存为，批量走文件夹。
+   *  两边都必须检查返回值 —— tauriInvoke 吞异常返回 null，不看就会出现
+   *  「提示导出成功、目录里一个文件都没有」（方案 §7 明确要求）。 */
+  async function handleSegExportCurrent() {
+    const name = images[ui.currentImageIndex]?.name;
+    if (!name) { showToast('请先选择一张图片', 'error'); return; }
+    if (!getSegExportData(name)) {
+      showToast('这张图还没有可导出的掩膜区域', 'error');
+      return;
+    }
+    const merged = ui.segExportFormat === 'seg_coco_merged';
+    const file = merged ? getSegBatchExportData(true)[0] : getSegExportData(name);
+    if (!file) {
+      showToast('COCO 实例 JSON 只写「实例」区域；road/sky 这类整片(stuff)不进实例文件', 'error');
+      return;
+    }
+    const contentBase64 = textToBase64(file.content);
+    const savedPath = await tauriInvoke('save_file_as', { defaultName: file.filename, contentBase64 });
+    if (savedPath) { showToast(`导出成功：${savedPath}`, 'success'); return; }
+    const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
+    if (isTauri) { showToast('已取消导出', 'info'); return; }
+    downloadFile(file.filename, `data:${file.mimeType};base64,${contentBase64}`, file.mimeType);
+    showToast('导出完成（浏览器下载）', 'success');
+  }
+
+  async function handleSegBatchExport() {
+    const merged = ui.segExportFormat === 'seg_coco_merged';
+    const files = getSegBatchExportData(merged);
+    if (files.length === 0) { showToast('还没有可导出的掩膜区域', 'error'); return; }
+
+    const dirPath = await tauriInvoke('pick_save_directory');
+    const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
+    if (!dirPath) {
+      if (isTauri) { showToast('已取消导出', 'info'); return; }
+      // 浏览器：逐个下载
+      let delay = 0;
+      for (const f of files) {
+        setTimeout(() => downloadFile(f.filename, f.content, f.mimeType), delay);
+        delay += 300;
+      }
+      showToast(`导出完成：${files.length} 个文件`, 'success');
+      return;
+    }
+
+    let count = 0;
+    let failed = 0;
+    const used = new Set<string>();
+    for (const f of files) {
+      let unique = f.filename;
+      if (used.has(unique)) {
+        const m = f.filename.match(/^(.*?)(\.[^.]+)$/);
+        const stem = m ? m[1] : f.filename;
+        const ext = m ? m[2] : '';
+        let n = 2;
+        while (used.has(`${stem}-${n}${ext}`)) n++;
+        unique = `${stem}-${n}${ext}`;
+      }
+      used.add(unique);
+      const ok = await tauriInvoke('save_file_base64', {
+        dirPath,
+        filename: unique,
+        contentBase64: textToBase64(f.content),
+      });
+      if (ok) count++; else failed++;
+    }
+    if (count === 0) showToast(`导出失败：没有任何文件写入 ${dirPath}`, 'error');
+    else if (failed > 0) showToast(`导出完成：成功 ${count} 个，失败 ${failed} 个；目录：${dirPath}`, 'error');
+    else showToast(`导出成功：${count} 个文件；目录：${dirPath}`, 'success');
+  }
+
   async function handleExportCurrent() {
+    // 分割模式：整条导出链路走 segmentation-export（不碰 formats.ts 的旧 case）
+    if (ui.workMode === 'segmentation') { await handleSegExportCurrent(); return; }
     // 分类模式没有「单图标注文件」这回事，统一导出标签 CSV
     if (ui.workMode === 'classification') { await exportClassificationLabels(); return; }
 
@@ -615,6 +700,8 @@
   }
 
   async function handleBatchExport() {
+    // 分割模式：批量导出掩膜
+    if (ui.workMode === 'segmentation') { await handleSegBatchExport(); return; }
     // 分类模式：导出标签 CSV（统一走 exportClassificationLabels，内含写盘校验）
     if (ui.workMode === 'classification') {
       await exportClassificationLabels();
@@ -923,6 +1010,10 @@
    *  于是「把当前图删光 → 点保存」仍然显示「共 13 处标注」，切到别的图也不变，
    *  看起来像没刷新/卡死。这里直接读 annotations[当前图]，不经过任何 derived。 */
   function handleSaveAnnotationsNow() {
+    if (ui.workMode === 'segmentation') {
+      showToast('分割掩膜只随「保存工程」写盘，不进 localStorage', 'info');
+      return;
+    }
     const name = images[ui.currentImageIndex]?.name;
     const isCls = ui.workMode === 'classification';
     const n = name
@@ -1038,15 +1129,24 @@
   </div>
 
   {#if !propsCollapsed}
-    <PropertiesPanel
-      onExportCurrent={handleExportCurrent}
-      onBatchExport={handleBatchExport}
-      onImportLabelme={handleImportLabelme}
-      onAddClass={handleAddClass}
-      onChangeClass={handleChangeClass}
-      onSelectClassColor={handleSelectClassColor}
-      onClose={() => propsCollapsed = true}
-    />
+    {#if ui.workMode === 'segmentation'}
+      <!-- 分割模式用自己的面板，完全不进 PropertiesPanel（那个文件是检测/分类共用的） -->
+      <SegmentationPanel
+        onExportCurrent={handleSegExportCurrent}
+        onBatchExport={handleSegBatchExport}
+        onClose={() => propsCollapsed = true}
+      />
+    {:else}
+      <PropertiesPanel
+        onExportCurrent={handleExportCurrent}
+        onBatchExport={handleBatchExport}
+        onImportLabelme={handleImportLabelme}
+        onAddClass={handleAddClass}
+        onChangeClass={handleChangeClass}
+        onSelectClassColor={handleSelectClassColor}
+        onClose={() => propsCollapsed = true}
+      />
+    {/if}
   {/if}
 
   <!-- 加载进度条 -->
@@ -1076,10 +1176,10 @@
             <h3>图像分类</h3>
             <p>整张图片打类别标签</p>
           </button>
-          <button class="mode-card disabled" onclick={() => showToast('语义分割即将推出', 'info')}>
+          <button class="mode-card" onclick={() => selectMode('segmentation')}>
             <div class="mode-icon">🎨</div>
-            <h3>语义分割</h3>
-            <p>像素级掩码标注（即将推出）</p>
+            <h3>图像分割</h3>
+            <p>像素级掩膜 · SAM3 开放词汇</p>
           </button>
         </div>
       </div>
@@ -1109,7 +1209,7 @@
   <ImageQualityModal onClose={() => showImageQuality = false} onJumpToImage={jumpToImage} />
 {/if}
 {#if showBatchOps}
-  <BatchOperationsModal onClose={() => showBatchOps = false} onRefresh={() => { if (ui.workMode !== 'classification') canvasRef?.render(); }} />
+  <BatchOperationsModal onClose={() => showBatchOps = false} onRefresh={() => { if (ui.workMode === 'detection') canvasRef?.render(); }} />
 {/if}
 
 <Toast />

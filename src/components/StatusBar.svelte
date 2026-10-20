@@ -15,13 +15,22 @@
     ui.currentImageIndex >= 0 && images[ui.currentImageIndex] ? images[ui.currentImageIndex].name : t('noFile')
   );
   const annCount = $derived(
-    ui.workMode === 'classification' 
-      ? (ui.currentImageIndex >= 0 && images[ui.currentImageIndex] 
-        ? (ui.imageLabels[images[ui.currentImageIndex].name]?.length || 0) 
+    ui.workMode === 'segmentation'
+      ? (ui.maskRev, ui.currentImageIndex >= 0 && images[ui.currentImageIndex]
+        ? (ui.maskCounts?.[images[ui.currentImageIndex].name] || 0)
         : 0)
-      : getCurrentAnnotations().length
+      : ui.workMode === 'classification' 
+        ? (ui.currentImageIndex >= 0 && images[ui.currentImageIndex] 
+          ? (ui.imageLabels[images[ui.currentImageIndex].name]?.length || 0) 
+          : 0)
+        : getCurrentAnnotations().length
   );
-  const modified = $derived(isModified());
+  // 分割模式：掩膜只随工程文件保存，没有 localStorage 那一层「已保存」语义
+  const modified = $derived(
+    ui.workMode === 'segmentation'
+      ? (ui.maskRev, !!ui.maskDirty[images[ui.currentImageIndex]?.name || ''])
+      : isModified()
+  );
 </script>
 
 <div class="status-bar">

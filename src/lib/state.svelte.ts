@@ -1,5 +1,6 @@
 /** 全局状态管理 — Svelte 5 runes */
 import type { Annotation, AnnotationType, ToolType, ImageInfo, ShortcutMap, ExportFormat, DragHandle, HistoryEntry, ImageSnapshot, Point } from './types';
+import { DEFAULT_SEG_CLASSES, DEFAULT_SEG_COLORS } from './segmentation/presets';
 
 // ============================================================
 // Reactive State — object/array types (exported directly, only properties mutated)
@@ -71,9 +72,42 @@ export const ui = $state({
   yoloModelName: '',
   yoloClassCount: 0,
   activeClass: 'person',
-  workMode: 'detection' as 'detection' | 'classification',
+  workMode: 'detection' as 'detection' | 'classification' | 'segmentation',
   showModeSelect: true,
   imageLabels: {} as Record<string, string[]>,
+  // ============================================================
+  // 图像分割模式（第三个模式）的独立状态命名空间
+  // 铁律 B：只新增 ui.mask* / ui.seg* 前缀字段，绝不往上面的检测/分类字段里塞东西。
+  // 这些字段不读它的旧代码完全不受影响（方案 §1 允许的改动类型 ①）。
+  // ============================================================
+  /** 掩膜数据版本号：掩膜本体存在 segmentation/store.svelte.ts 里（不进 $state），
+   *  组件要响应式刷新就靠读它 */
+  maskRev: 0,
+  /** 每张图的区域数（Sidebar 徽标 / 状态栏 / 统计用） */
+  maskCounts: {} as Record<string, number>,
+  maskTotal: 0,
+  /** 掩膜脏标记：掩膜只随工程文件保存，不进 localStorage（5 MB 装不下），
+   *  所以不能复用 imageModified —— 那会让状态栏把「没写盘」显示成「已保存」 */
+  maskDirty: {} as Record<string, boolean>,
+  /** 当前选中的区域 ordinal（0 = 没选） */
+  segSelectedRegion: 0,
+  segOverlayMode: 'instance' as 'instance' | 'class',
+  segOverlayOpacity: 0.45,
+  segShowOverlay: true,
+  segShowCandidate: true,
+  segConfThreshold: 0.3,
+  segBackendReady: false,
+  segMaskSupported: false,
+  segPromptRunning: false,
+  segText: '',
+  /** 点提示工具用的类别（文本提示的类别由输入框决定） */
+  segActiveClass: 'road',
+  /** 分割模式的导出格式单独一个字段：ui.exportFormat 是检测/分类共用的，
+   *  往里塞 seg_* 会让切回检测模式时格式下拉框显示空白（值不在选项里） */
+  segExportFormat: 'seg_coco' as string,
+  /** 分割模式自己的类别表 —— 不写进检测/分类在用的 classes，避免污染它们的导出与统计 */
+  segClasses: [...DEFAULT_SEG_CLASSES],
+  segClassColors: { ...DEFAULT_SEG_COLORS },
   shortcuts: {
     select: 'v', rect: 'r', polygon: 'p', rotated: 'o', keypoint: 'k',
     sam: 'm', magicwand: 'w',
@@ -561,17 +595,20 @@ export function getClassCounts() { return _classCounts; }
 export function getKeypointCount() { return _currentKeypointCount; }
 
 // ============================================================
-// 按模式取数（分类 / 检测两套统计口径的唯一入口）
+// 按模式取数（分类 / 检测 / 分割三套统计口径的唯一入口）
 // ============================================================
-// 分类模式的数据在 ui.imageLabels 上，检测模式的数据在 annotations 上。
+// 分类模式的数据在 ui.imageLabels 上，检测模式的数据在 annotations 上，
+// 分割模式的数据在 segmentation/store 里（区域数由 store 同步到 ui.maskTotal）。
 // 谁要在界面上显示「多少个」，都必须走这两个函数，别再直接调
 // getTotalAnnotationCount() —— 那会让分类模式永远显示 0。
 export function getCurrentModeCount(): number {
+  if (ui.workMode === 'segmentation') { ui.maskRev; return ui.maskTotal || 0; }
   return ui.workMode === 'classification' ? _totalLabelCount : _totalAnnotationCount;
 }
 
 /** 数量后面的量词 */
 export function getCurrentModeUnit(): string {
+  if (ui.workMode === 'segmentation') return '个区域';
   return ui.workMode === 'classification' ? '个标签' : '处标注';
 }
 
