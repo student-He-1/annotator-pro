@@ -1,8 +1,9 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t } from '$lib/i18n.svelte';
-  import { ui, images, addAnnotation, showToast, getNextAnnotationId, pushHistory, getActiveClass } from '$lib/state.svelte';
+  import { ui, images, annotations, showToast, pushHistory, saveAnnotations, getActiveClass } from '$lib/state.svelte';
   import { loadModel, isModelLoaded, getModelName, segment, DEFAULT_SAM_CONFIG, clearCache } from '$lib/sam';
   import type { SamResult } from '$lib/sam';
+  import type { Annotation } from '$lib/types';
 
   interface Props {
     onClose: () => void;
@@ -63,37 +64,53 @@
     try {
       isRunning = true;
       progress = { current: 0, total: images.length };
+      const failed: string[] = [];
       let count = 0;
       for (let i = 0; i < images.length; i++) {
-        const img = images[i];
         progress.current = i + 1;
+        await new Promise(r => setTimeout(r, 0));   // 让进度条有机会刷新
+        const imgData = images[i];
         try {
-          const cx = img.width / 2;
-          const cy = img.height / 2;
-          const result = await segment(img, [{ x: cx, y: cy, label: 1 }], null, {
+          // segment() 需要真正的 HTMLImageElement。
+          // 原来这里直接把 ImageInfo 元数据传进去，会在 imageToBase64 里抛错，
+          // 又被下面的 catch 吞掉 —— 所以「全图自动分割」永远报 0 张。
+          const el = new Image();
+          el.src = imgData.dataUrl;
+          await new Promise<void>(resolve => { el.onload = () => resolve(); el.onerror = () => resolve(); });
+
+          const result = await segment(el, [{ x: el.naturalWidth / 2, y: el.naturalHeight / 2, label: 1 }], null, {
             encoderInputSize: 1024,
             maskThreshold,
             simplifyTolerance,
             multiMask,
           });
           if (result.polygon.length >= 3) {
-            const ann = {
-              type: 'polygon' as const,
+            // 直接写目标图，不再临时切 currentImageIndex。
+            // 切索引会让 Canvas 反复重载图片，正是底片/轮廓错位的来源之一。
+            const name = imgData.name;
+            const existing = annotations[name] || [];
+            const nextId = existing.length > 0 ? Math.max(...existing.map(a => a.id)) + 1 : 0;
+            const ann: Annotation = {
+              type: 'polygon',
               points: result.polygon.map(p => ({ x: p.x, y: p.y })),
               className: getActiveClass(),
-              id: getNextAnnotationId(),
+              id: nextId,
             };
-            // 切换到该图添加标注
-            const prevIdx = ui.currentImageIndex;
-            ui.currentImageIndex = i;
-            addAnnotation(ann);
-            ui.currentImageIndex = prevIdx;
+            annotations[name] = [...existing, ann];
             count++;
           }
-        } catch { /* 跳过失败的图片 */ }
+        } catch (e: any) {
+          failed.push(`${imgData.name}: ${e?.message || e}`);
+        }
       }
       clearCache();
-      showToast(`Auto-segmented ${count}/${images.length} images`, 'success');
+      pushHistory();
+      saveAnnotations();
+      if (failed.length > 0) {
+        showToast(`Auto-segmented ${count}/${images.length} images；失败 ${failed.length} 张（${failed[0]}）`, 'error');
+      } else {
+        showToast(`Auto-segmented ${count}/${images.length} images`, 'success');
+      }
     } catch (e: any) {
       showToast(`Batch segment failed: ${e.message || e}`, 'error');
     } finally {

@@ -12,6 +12,7 @@
   import {
     initEngine, resize, render, screenToImage, imageToScreen, hitTestAnnotation, hitTestHandle,
     resizeRectAnnotation, fitToScreen, hitTestPolygonVertex, hitTestPolygonEdge,
+    getMinZoom, clampPan,
   } from '$lib/canvas/engine.svelte';
   import type { Annotation, RectAnnotation, RotatedAnnotation, DragHandle, PolygonAnnotation } from '$lib/types';
   import { magicWand } from '$lib/magicwand';
@@ -44,19 +45,45 @@
   // Load current image
   // ============================================================
   // 图片加载
-  // 图片加载
+  // 竞态守卫：快速连续切图（或批量过程中手动切图）时，多个 Image 会同时在加载。
+  // 若不拦截，onload 是「先发后到」的 —— 旧图的 onload 可能晚于新图触发，把 ui.currentImage 写回旧图，
+  // 而 render() 的标注是按 currentImageIndex 取的 → 表现为「底片是图A、轮廓是图B」，且不会自愈。
+  // loadToken / loadedKey 都是普通变量（非 $state），读写它们不会给 $effect 增加依赖。
+  let loadToken = 0;
+  let loadedKey = '';   // 当前 ui.currentImage 对应的图片标识（用 dataUrl，重导入会变）
   $effect(() => {
     const idx = ui.currentImageIndex;
     if (idx < 0 || idx >= images.length) {
+      loadToken++;              // 作废所有在途加载，避免旧图把已清空的画布填回去
+      loadedKey = '';
+      ui.imageLoading = false;
       ui.currentImage = null;
       showWelcome = true;
       imageInfoText = '';
+      queueMicrotask(render);   // 立刻清空画布，别留着上一张的残影
       return;
     }
     const imgData = images[idx];
+    const key = imgData.dataUrl;
+    // 同一张图重复触发（导入新图会改动 images 数组，导致本 effect 反复重跑）时直接跳过，
+    // 否则每次都会重新置空 + 重载，导入过程中画面会不停闪白。
+    if (loadedKey === key) return;
+    loadedKey = key;
+
+    const token = ++loadToken;  // 当前这次加载的编号
+    // 加载期间不置空 currentImage，也不清屏 —— 保留上一帧底图，界面更连贯。
+    // 用 imageLoading 标记，render() 在这段时间只画底图、不画标注，
+    // 从而避免「底片还是上一张、轮廓已经是这一张」的错配残影（删图后停留 2~3 秒的现象）。
+    ui.imageLoading = true;
+    // 立刻重绘一次：此刻底图还是上一张，但 imageLoading 会让 render 跳过标注，
+    // 于是旧图上的轮廓会马上消失，而不是等新图 decode 完才一起消失。
+    // 用 queueMicrotask 是为了让 render 在 effect 的依赖追踪之外执行，避免多余的重跑。
+    queueMicrotask(render);
     const img = new Image();
     img.onload = () => {
+      if (token !== loadToken) return;  // 已被更新的加载请求取代，直接丢弃
       ui.currentImage = img;
+      ui.imageLoading = false;
       showWelcome = false;
       ui.selectedAnnotation = null;
       ui.polygonPoints = [];
@@ -72,8 +99,8 @@
         fitToScreen();
       }
       render();
-      ui.history = [];
-      ui.historyIndex = -1;
+      // 这里原来会清空 ui.history，导致「切到别的图再切回来就撤不了」。
+      // 历史条目自带 imageName，undo() 会自己跳回对应图片，不需要清空。
     };
     img.src = imgData.dataUrl;
   });
@@ -98,6 +125,7 @@
     }
     if (e.button !== 0) return;
     if (!ui.currentImage) return;
+    if (ui.imageLoading) return;   // 新图还没 decode 完，此时坐标基准还是上一张，禁止交互
 
     const imgPos = screenToImage(e.clientX, e.clientY);
     mouseStartImg = imgPos;
@@ -440,12 +468,13 @@
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    const newZoom = Math.max(0.1, Math.min(10, ui.zoom * factor));
+    const newZoom = Math.max(getMinZoom(), Math.min(10, ui.zoom * factor));
     const worldX = (mx - ui.panX - canvasEl.width / 2) / ui.zoom;
     const worldY = (my - ui.panY - canvasEl.height / 2) / ui.zoom;
     ui.panX = mx - worldX * newZoom - canvasEl.width / 2;
     ui.panY = my - worldY * newZoom - canvasEl.height / 2;
     ui.zoom = newZoom;
+    clampPan();
     render();
   }
 
@@ -631,8 +660,8 @@
       }
       return;
     }
-    if (matchShortcut(e, ui.shortcuts.zoomIn)) { e.preventDefault(); ui.zoom = Math.min(10, ui.zoom * 1.2); render(); return; }
-    if (matchShortcut(e, ui.shortcuts.zoomOut)) { e.preventDefault(); ui.zoom = Math.max(0.1, ui.zoom / 1.2); render(); return; }
+    if (matchShortcut(e, ui.shortcuts.zoomIn)) { e.preventDefault(); ui.zoom = Math.min(10, ui.zoom * 1.2); clampPan(); render(); return; }
+    if (matchShortcut(e, ui.shortcuts.zoomOut)) { e.preventDefault(); ui.zoom = Math.max(getMinZoom(), ui.zoom / 1.2); clampPan(); render(); return; }
     if (matchShortcut(e, ui.shortcuts.fit)) { e.preventDefault(); fitToScreen(); render(); return; }
     if (matchShortcut(e, ui.shortcuts.save)) { e.preventDefault(); saveAnnotations(); showToast(t('autoSaved'), 'success'); return; }
 
@@ -691,28 +720,33 @@
   // ============================================================
   // Undo/Redo
   // ============================================================
+  /** 把当前图片切到指定名字（已经在它上面就什么都不做） */
+  function focusImageByName(name: string) {
+    if (images[ui.currentImageIndex]?.name === name) return;
+    const idx = images.findIndex(img => img.name === name);
+    if (idx >= 0) ui.currentImageIndex = idx;
+  }
+
   function undo() {
     if (ui.historyIndex < 0) return;
+    // cur = 这次要撤销掉的那一步的快照，记着它属于哪张图
+    const cur = ui.history[ui.historyIndex];
     ui.historyIndex = ui.historyIndex - 1;
-    if (ui.historyIndex < 0) {
-      const name = images[ui.currentImageIndex]?.name;
-      if (name) annotations[name] = [];
-      ui.selectedAnnotation = null;
-      render();
-      saveAnnotations();
-      return;
-    }
-    const entry = ui.history[ui.historyIndex];
-    if (entry.imageName === images[ui.currentImageIndex]?.name) {
-      annotations[entry.imageName] = JSON.parse(JSON.stringify(entry.annotations));
+
+    if (ui.historyIndex >= 0) {
+      const prev = ui.history[ui.historyIndex];
+      annotations[prev.imageName] = JSON.parse(JSON.stringify(prev.annotations));
+      focusImageByName(prev.imageName);
     } else {
-      const idx = images.findIndex(img => img.name === entry.imageName);
-      if (idx >= 0) {
-        annotations[entry.imageName] = JSON.parse(JSON.stringify(entry.annotations));
-        ui.currentImageIndex = idx;
-      }
+      // 撤销的是最早那次操作 → 回到该图「还没有标注」的状态。
+      // 这里必须用 cur.imageName（那次操作所在的图），而不是当前正在看的图。
+      annotations[cur.imageName] = [];
+      focusImageByName(cur.imageName);
     }
     ui.selectedAnnotation = null;
+    ui.drawingAnnotation = null;
+    ui.isDrawing = false;
+    ui.polygonPoints = [];
     render();
     saveAnnotations();
   }

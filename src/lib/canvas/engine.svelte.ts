@@ -160,6 +160,10 @@ export function render() {
 
   ctx.drawImage(ui.currentImage, -hw, -hh, imgW, imgH);
 
+  // 新图还在加载：底图可能仍是上一张，此时只画底图、跳过标注与预览，
+  // 避免出现「底片是上一张、轮廓是这一张」的错配残影（删图后停留 2~3 秒的现象）。
+  if (ui.imageLoading) { ctx.restore(); return; }
+
   if (ui.workMode !== 'classification') {
     getCurrentAnnotations().forEach(ann => drawAnnotation(ann, ann === ui.selectedAnnotation));
   }
@@ -426,4 +430,32 @@ export function fitToScreen() {
   ui.panX = 0;
   ui.panY = 0;
   return scale;
+}
+
+/** 「适应画面」对应的缩放比例（只算值，不改状态） */
+export function getFitScale(): number {
+  if (!ui.currentImage || !container) return 1;
+  const cw = container.clientWidth, ch = container.clientHeight;
+  return Math.min(cw / ui.currentImage.width, ch / ui.currentImage.height, 1) * 0.9;
+}
+
+/** 最小缩放。
+ *  原来固定下限 0.1 —— 但大图的「适应画面」本身可能就低于 0.1（例如 12000px 宽的图），
+ *  这时滚轮缩小会被下限弹回去，表现为「放大了就缩不小，只有点适应画面才行」。
+ *  改成永远允许缩到「适应画面的一半」。 */
+export function getMinZoom(): number {
+  return Math.min(0.1, getFitScale() * 0.5);
+}
+
+/** 约束平移，保证画布上至少还能看到一部分图像。
+ *  否则放大后再缩小，图像会被一步步推到视野外，看起来跟「缩不小」一样。 */
+export function clampPan() {
+  if (!ui.currentImage || !canvas) return;
+  const cw = canvas.width, ch = canvas.height;
+  const sw = ui.currentImage.width * ui.zoom;
+  const sh = ui.currentImage.height * ui.zoom;
+  const maxX = Math.max(0, (sw - cw) / 2) + cw / 2;
+  const maxY = Math.max(0, (sh - ch) / 2) + ch / 2;
+  ui.panX = Math.max(-maxX, Math.min(maxX, ui.panX));
+  ui.panY = Math.max(-maxY, Math.min(maxY, ui.panY));
 }

@@ -3,9 +3,18 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{State, Manager};
+use tauri::State;
 
 static CHILD: std::sync::OnceLock<Mutex<Option<std::process::Child>>> = std::sync::OnceLock::new();
+
+/// Debug log to file
+fn dbg_log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
+        .open(r"D:\桌面\图像标注\annotator-pro\tauri_debug.log") {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
 
 /// Sidecar 进程状态
 struct SidecarState {
@@ -225,6 +234,11 @@ fn save_file_base64(dir_path: String, filename: String, content_base64: String) 
     let path = PathBuf::from(&dir_path);
     fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     let file_path = path.join(&filename);
+    // filename 可能带子目录（文件夹导入保留了相对路径，如 "花朵/1.xml"），
+    // 父目录不存在时 fs::write 会直接失败；这里顺手补齐。
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let bytes = base64::engine::general_purpose::STANDARD.decode(&content_base64)
         .map_err(|e| e.to_string())?;
     fs::write(&file_path, bytes).map_err(|e| e.to_string())?;
@@ -250,7 +264,7 @@ async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String
     let script = exe_dir.join("sidecar").join("sam_server.py");
     let script = script.to_string_lossy().to_string();
 
-    if !std::path::Path::new(python_exe).exists() {
+    if !std::path::Path::new(&python_exe).exists() {
         return Err(format!("Python not found: {}", python_exe));
     }
     if !std::path::Path::new(&script).exists() {
@@ -383,6 +397,11 @@ async fn sam_segment(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    std::panic::set_hook(Box::new(|info| {
+        dbg_log(&format!("PANIC: {}", info));
+    }));
+    dbg_log("=== run() start ===");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -391,7 +410,9 @@ pub fn run() {
             port: Mutex::new(None),
         })
         .setup(|_app| {
+            dbg_log("setup: begin");
             let _ = CHILD.set(Mutex::new(None));
+            dbg_log("setup: done");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -410,6 +431,26 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
+            let name = match &event {
+                tauri::RunEvent::Exit => "Exit".to_string(),
+                tauri::RunEvent::ExitRequested { code, .. } => format!("ExitRequested:{:?}", code),
+                tauri::RunEvent::WindowEvent { label, event: we, .. } => format!("WindowEvent:{}:{}", label, match we {
+                    tauri::WindowEvent::CloseRequested { .. } => "CloseRequested",
+                    tauri::WindowEvent::Destroyed => "Destroyed",
+                    tauri::WindowEvent::Focused(f) => if *f {"Focused"} else {"Unfocused"},
+                    tauri::WindowEvent::Resized(_) => "Resized",
+                    _ => "other",
+                }),
+                tauri::RunEvent::Ready => "Ready".to_string(),
+                tauri::RunEvent::Resumed => "Resumed".to_string(),
+                _ => "other".to_string(),
+            };
+            {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(r"D:\桌面\图像标注\annotator-pro\tauri_debug.log") {
+                    let _ = writeln!(f, "RunEvent: {}", name);
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 if let Some(g) = CHILD.get() {
                     if let Ok(mut l) = g.lock() {

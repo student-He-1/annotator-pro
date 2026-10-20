@@ -1,4 +1,4 @@
-﻿/** 全局状态管理 — Svelte 5 runes */
+/** 全局状态管理 — Svelte 5 runes */
 import type { Annotation, AnnotationType, ToolType, ImageInfo, ShortcutMap, ExportFormat, DragHandle, HistoryEntry, Point } from './types';
 
 // ============================================================
@@ -20,6 +20,8 @@ export let imageModified: Record<string, boolean> = $state({});
 export const ui = $state({
   currentImageIndex: -1,
   currentImage: null as HTMLImageElement | null,
+  /** 正在加载新图片：此时底图可能还是上一张，render() 会跳过标注绘制，避免错配残影 */
+  imageLoading: false,
   currentTool: 'select' as ToolType,
   selectedAnnotation: null as Annotation | null,
   zoom: 1,
@@ -279,6 +281,15 @@ export function pushHistory() {
   const name = images[ui.currentImageIndex]?.name;
   if (!name) return;
   const snapshot = JSON.parse(JSON.stringify(annotations[name] || []));
+
+  // 去重：状态没变就不产生历史点。
+  // 否则「鼠标点一下选中标注」「按下手柄但没拖动」都会 push 一条与上一条完全相同的快照，
+  // 用户按 Ctrl+Z 看起来就像没反应（得连按好几次才真正退一格）。
+  const last = ui.history[ui.historyIndex];
+  if (last && last.imageName === name && JSON.stringify(last.annotations) === JSON.stringify(snapshot)) {
+    return;
+  }
+
   ui.history = ui.history.slice(0, ui.historyIndex + 1);
   ui.history.push({ imageName: name, annotations: snapshot });
   if (ui.history.length > maxHistory) ui.history.shift();

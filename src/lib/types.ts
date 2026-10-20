@@ -102,10 +102,14 @@ export interface ProjectFile {
   updatedAt: string;
   images: ProjectImage[];
   annotations: Record<string, Annotation[]>;
+  /** 分类模式的图片标签（buildProjectFile 会写，可缺省） */
+  imageLabels?: Record<string, string[]>;
   classes: string[];
   classColors: Record<string, string>;
   settings: {
     exportFormat: ExportFormat;
     skeletonId: string;
+    /** 工程所属工作模式 */
+    workMode?: 'detection' | 'classification';
   };
 }

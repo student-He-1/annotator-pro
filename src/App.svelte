@@ -9,10 +9,10 @@
     classColors as colors, getClassColor, pushHistory,
     annotations, markModified, clearModified,
   } from './lib/state.svelte';
-  import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent } from '$lib/export/formats';
+  import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask } from '$lib/export/formats';
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
   import { saveProjectAs, loadProjectFromFile } from '$lib/project.svelte';
-  import { fitToScreen, render } from '$lib/canvas/engine.svelte';
+  import { fitToScreen, render, getMinZoom, clampPan } from '$lib/canvas/engine.svelte';
   import { clearCache as clearSamCache } from '$lib/sam';
   import type { ImageInfo, ExportFormat } from '$lib/types';
 
@@ -25,6 +25,19 @@
       console.warn('Tauri invoke failed:', cmd, e);
       return null;
     }
+  }
+
+  /** 文本 → base64。
+   *  不能用裸 btoa()：它只接受 Latin-1，类别名/文件名一旦含中文就抛
+   *  InvalidCharacterError，整个导出会静默失败。这里先转 UTF-8 字节再编码。 */
+  function textToBase64(text: string): string {
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    const CHUNK = 0x8000;   // 分块，避免超长参数导致 apply 爆栈
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
   }
 
   import Toast from './components/Toast.svelte';
@@ -106,7 +119,10 @@
     return ['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif', 'svg', 'avif', 'ico', 'tiff', 'tif', 'jfif', 'jpe', 'jif', 'wdp', 'jxr', 'hdp'].includes(ext);
   }
 
-  function loadImages(files: FileList) {
+  /** @param pathMap 可选：相对名 → 磁盘绝对路径。
+   *  桌面端导入时把 Rust 返回的真实路径带上，工程文件才能记住图片位置，
+   *  否则保存出来的 .annotator 里 path 全是空，下次打开只能让你「重新导入」。 */
+  function loadImages(files: FileList | File[], pathMap?: Record<string, string>) {
     const allFiles = Array.from(files);
     const imageFiles = allFiles.filter(isImageFile);
     const filteredOut = allFiles.length - imageFiles.length;
@@ -149,6 +165,7 @@
             dataUrl: url,
             width: img.width || img.naturalWidth,
             height: img.height || img.naturalHeight,
+            path: pathMap?.[displayName] || pathMap?.[file.name] || '',
           });
         };
         img.onerror = () => {
@@ -229,7 +246,10 @@
             const blob = dataURLtoBlob(img.base64);
             return new File([blob], img.name, { type: blob.type });
           });
-          loadImages(files);
+          // 记住每张图的磁盘绝对路径，否则工程文件里 path 全空 → 下次打开只能重新导入
+          const pathMap: Record<string, string> = {};
+          for (const img of imgs) { if (img?.path) pathMap[img.name] = img.path; }
+          loadImages(files, pathMap);
           showToast(`成功加载 ${files.length} 张图片`, 'success');
         } else {
           showToast('文件夹中没有找到图片', 'info');
@@ -268,19 +288,21 @@
       try {
         showToast('正在加载图片...', 'info');
         const files: File[] = [];
+        const pathMap: Record<string, string> = {};
         for (const p of filePaths) {
           try {
             const img = await tauriInvoke('read_image_file', { filePath: p });
             if (img) {
               const blob = dataURLtoBlob(img.base64);
               files.push(new File([blob], img.name, { type: blob.type }));
+              pathMap[img.name] = img.path || p;
             }
           } catch (e) {
             console.warn('Failed to load:', p, e);
           }
         }
         if (files.length > 0) {
-          loadImages(files);
+          loadImages(files, pathMap);
           showToast(`成功加载 ${files.length} 张图片`, 'success');
         }
       } catch (e) {
@@ -331,6 +353,28 @@
     saveAnnotations();
   }
 
+  /** 一键清空图片列表。只清列表，标注数据保留 —— 重新导入同名图片还能恢复。 */
+  function handleClearImages() {
+    if (images.length === 0) { showToast('图片列表已经是空的', 'info'); return; }
+    const n = images.length;
+    if (!confirm(`确定清空当前 ${n} 张图片吗？\n\n只清空列表，标注数据会保留；重新导入同名图片即可恢复。`)) return;
+
+    for (const img of images) {
+      try { URL.revokeObjectURL(img.dataUrl); } catch {}
+    }
+    images.splice(0, images.length);
+    ui.currentImageIndex = -1;
+    ui.currentImage = null;
+    ui.imageLoading = false;
+    ui.selectedAnnotation = null;
+    ui.polygonPoints = [];
+    ui.isDrawing = false;
+    ui.drawingAnnotation = null;
+    render();
+    saveAnnotations();
+    showToast(`已清空 ${n} 张图片（标注数据已保留）`, 'success');
+  }
+
   function jumpToImage(imageName: string) {
     const idx = images.findIndex(img => img.name === imageName);
     if (idx >= 0) {
@@ -345,9 +389,52 @@
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
   }
 
-  function handleDrop(e: DragEvent) {
+  /** 从 DataTransfer 里收集文件；拖进来的是文件夹就递归展开。
+   *  说明：必须在 tauri.conf.json 里把 dragDropEnabled 设为 false，
+   *  否则 Tauri 会拦截系统拖放、HTML5 的 drop 事件根本不会触发（表现就是「拖进来没反应」）。 */
+  async function collectDroppedFiles(dt: DataTransfer): Promise<File[]> {
+    const items = Array.from(dt.items || []);
+    const entries = items
+      .map(it => (typeof (it as any).webkitGetAsEntry === 'function' ? (it as any).webkitGetAsEntry() : null))
+      .filter(Boolean) as any[];
+
+    if (entries.length === 0) return Array.from(dt.files || []);
+
+    const out: File[] = [];
+    async function walk(entry: any, prefix: string) {
+      if (entry.isFile) {
+        const file: File = await new Promise((res, rej) => entry.file(res, rej));
+        // 保留相对路径，让「拖文件夹」和「导入文件夹」的命名语义一致
+        try { Object.defineProperty(file, 'webkitRelativePath', { value: prefix + file.name }); } catch { /* ignore */ }
+        out.push(file);
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        // readEntries 每次最多返回 100 条，必须循环读到空
+        for (;;) {
+          const batch: any[] = await new Promise((res, rej) => reader.readEntries(res, rej));
+          if (batch.length === 0) break;
+          for (const e of batch) await walk(e, prefix + entry.name + '/');
+        }
+      }
+    }
+    for (const e of entries) await walk(e, '');
+    return out;
+  }
+
+  async function handleDrop(e: DragEvent) {
     e.preventDefault();
-    if (e.dataTransfer?.files) loadImages(e.dataTransfer.files);
+    if (!e.dataTransfer) return;
+    try {
+      const files = await collectDroppedFiles(e.dataTransfer);
+      const imagesOnly = files.filter(isImageFile);
+      if (imagesOnly.length === 0) {
+        showToast(files.length === 0 ? '没有读到文件' : `拖入的 ${files.length} 个文件里没有图片`, 'error');
+        return;
+      }
+      loadImages(imagesOnly);
+    } catch (err: any) {
+      showToast('拖拽导入失败: ' + (err?.message || err), 'error');
+    }
   }
 
   // ============================================================
@@ -366,7 +453,7 @@
         await tauriInvoke('save_file_base64', {
           dirPath,
           filename: 'classification_labels.csv',
-          contentBase64: btoa(csvContent),
+          contentBase64: textToBase64(csvContent),
         });
         showToast(`导出成功！文件已保存到: ${dirPath}`, 'success');
         return;
@@ -380,26 +467,35 @@
     {
       const dirPath = await tauriInvoke('pick_save_directory');
       if (dirPath) {
+        let savedPath: string | null = null;
 
-        if (ui.exportFormat === 'png' || ui.exportFormat === 'jpg') {
+        if (ui.exportFormat === 'png' || ui.exportFormat === 'jpg' || ui.exportFormat === 'unet_mask') {
           const anns = annotations[name] || [];
-          const result = await exportVisualImageDataUrl(imgData, anns, { format: ui.exportFormat });
-          const base64 = result.dataUrl.split(',')[1];
-          await tauriInvoke('save_file_base64', {
+          // unet_mask 走灰度高图导出，和可视化图是两条不同的实现
+          const result = ui.exportFormat === 'unet_mask'
+            ? await exportUnetMask(imgData, anns)
+            : await exportVisualImageDataUrl(imgData, anns, { format: ui.exportFormat as 'png' | 'jpg' });
+          savedPath = await tauriInvoke('save_file_base64', {
             dirPath,
             filename: result.filename,
-            contentBase64: base64,
+            contentBase64: result.dataUrl.split(',')[1],
           });
         } else {
           const data = getExportData(name, ui.exportFormat);
           if (!data) { showToast(t('noAnnotations'), 'error'); return; }
-          await tauriInvoke('save_file_base64', {
+          savedPath = await tauriInvoke('save_file_base64', {
             dirPath,
             filename: data.filename,
-            contentBase64: btoa(data.content),
+            contentBase64: textToBase64(data.content),
           });
         }
-        showToast(`导出成功！文件已保存到: ${dirPath}`, 'success');
+
+        // 写盘失败时 tauriInvoke 返回 null，不能再无脑报「成功」
+        if (savedPath) {
+          showToast(`导出成功：${savedPath}`, 'success');
+        } else {
+          showToast(`导出失败：未能写入 ${dirPath}（请检查目录权限，或换一个目录）`, 'error');
+        }
         return;
       }
     }
@@ -471,7 +567,7 @@
         await tauriInvoke('save_file_base64', {
           dirPath,
           filename: 'classification_labels.csv',
-          contentBase64: btoa(csvContent),
+          contentBase64: textToBase64(csvContent),
         });
         showToast(`导出成功！文件已保存到: ${dirPath}`, 'success');
         return;
@@ -489,51 +585,47 @@
     // 尝试 Tauri 原生对话框
     const dirPath = await tauriInvoke('pick_save_directory');
     if (dirPath) {
-      let count = 0;
       const dir = dirPath as string;
+      let count = 0;
+      let failed = 0;
+
+      // save_file_base64 失败时 tauriInvoke 会吞掉异常返回 null，
+      // 所以必须看返回值 —— 原来写完就 count++，会报「成功」但目录里什么都没有。
+      const writeOne = async (filename: string, contentBase64: string) => {
+        const ok = await tauriInvoke('save_file_base64', { dirPath: dir, filename, contentBase64 });
+        if (ok) count++; else failed++;
+      };
 
       if (ui.exportFormat === 'coco_merged') {
-        const content = getMergedCOCO();
-        await tauriInvoke('save_file_base64', {
-          dirPath: dir,
-          filename: 'annotations.json',
-          contentBase64: btoa(content),
-        });
-        count = getImagesWithAnnotations().length;
-      } else if (ui.exportFormat === 'png' || ui.exportFormat === 'jpg') {
-        const annotatedImgs = getImagesWithAnnotations();
-        for (const img of annotatedImgs) {
+        await writeOne('annotations.json', textToBase64(getMergedCOCO()));
+      } else if (ui.exportFormat === 'png' || ui.exportFormat === 'jpg' || ui.exportFormat === 'unet_mask') {
+        for (const img of getImagesWithAnnotations()) {
           const anns = annotations[img.name] || [];
-          const result = await exportVisualImageDataUrl(img, anns, { format: ui.exportFormat });
-          const base64 = result.dataUrl.split(',')[1];
-          await tauriInvoke('save_file_base64', {
-            dirPath: dir,
-            filename: result.filename,
-            contentBase64: base64,
-          });
-          count++;
+          const result = ui.exportFormat === 'unet_mask'
+            ? await exportUnetMask(img, anns)
+            : await exportVisualImageDataUrl(img, anns, { format: ui.exportFormat as 'png' | 'jpg' });
+          await writeOne(result.filename, result.dataUrl.split(',')[1]);
         }
       } else {
         for (const img of getImagesWithAnnotations()) {
           const data = getExportData(img.name, ui.exportFormat);
           if (!data) continue;
-          await tauriInvoke('save_file_base64', {
-            dirPath: dir,
-            filename: data.filename,
-            contentBase64: btoa(data.content),
-          });
-          count++;
+          await writeOne(data.filename, textToBase64(data.content));
         }
         if (ui.exportFormat === 'yolo') {
-          await tauriInvoke('save_file_base64', {
-            dirPath: dir,
-            filename: 'classes.txt',
-            contentBase64: btoa(classes.join('\n')),
-          });
+          await writeOne('classes.txt', textToBase64(classes.join('\n')));
         }
       }
 
-      showToast(`导出成功！${count} 个文件已保存到: ${dir}`, 'success');
+      const isImageFmt = ui.exportFormat === 'png' || ui.exportFormat === 'jpg' || ui.exportFormat === 'unet_mask';
+      const note = isImageFmt ? '' : '（该格式导出的是标注文件，不是图片）';
+      if (count === 0) {
+        showToast(`导出失败：没有任何文件写入 ${dir}${failed > 0 ? `（${failed} 个失败）` : ''}`, 'error');
+      } else if (failed > 0) {
+        showToast(`导出完成：成功 ${count} 个，失败 ${failed} 个${note}；目录：${dir}`, 'error');
+      } else {
+        showToast(`导出成功：${count} 个文件${note}；目录：${dir}`, 'success');
+      }
       return;
     }
 
@@ -761,8 +853,8 @@
   // ============================================================
   // Project File
   // ============================================================
-  function handleSaveProject() {
-    saveProjectAs();
+  async function handleSaveProject() {
+    await saveProjectAs();
   }
 
   function handleOpenProject() {
@@ -831,6 +923,7 @@
       onImportFolder={handleImportFolder}
       onImportFiles={handleImportFiles}
       onDeleteImage={handleDeleteImage}
+      onClearImages={handleClearImages}
     />
   {/if}
 
@@ -856,8 +949,8 @@
       onSettings={() => { closeAllModals(); showSettings = true; }}
       onToggleLang={handleToggleLang}
       onToggleTheme={toggleTheme}
-      onZoomIn={() => { ui.zoom = Math.min(10, ui.zoom * 1.2); render(); }}
-      onZoomOut={() => { ui.zoom = Math.max(0.1, ui.zoom / 1.2); render(); }}
+      onZoomIn={() => { ui.zoom = Math.min(10, ui.zoom * 1.2); clampPan(); render(); }}
+      onZoomOut={() => { ui.zoom = Math.max(getMinZoom(), ui.zoom / 1.2); clampPan(); render(); }}
       onFit={() => { fitToScreen(); render(); }}
       imageInfo={imageInfo}
     />

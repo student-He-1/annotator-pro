@@ -44,8 +44,73 @@ export const DEFAULT_SAM_CONFIG: SamConfig = {
   multiMask: true,
 };
 
+// ====== 文本提示词处理 ======
+// SAM3 的文本编码器是英文语料训练的，直接送中文（如「花朵」）基本出不来结果。
+// 这里做一层常用词映射：命中就换成英文再发；没命中就原样发送，交给后端处理。
+const PROMPT_ZH_TO_EN: Record<string, string> = {
+  '人': 'person', '行人': 'person', '人脸': 'face', '男人': 'man', '女人': 'woman', '小孩': 'child',
+  '花': 'flower', '花朵': 'flower', '鲜花': 'flower', '花草': 'flower',
+  '树': 'tree', '树木': 'tree', '草': 'grass', '草地': 'grass',
+  '狗': 'dog', '小狗': 'dog', '猫': 'cat', '小猫': 'cat', '鸟': 'bird', '马': 'horse',
+  '牛': 'cow', '羊': 'sheep', '猪': 'pig', '鸡': 'chicken', '鱼': 'fish',
+  '蝴蝶': 'butterfly', '蜜蜂': 'bee', '动物': 'animal',
+  '车': 'car', '汽车': 'car', '轿车': 'car', '卡车': 'truck', '公交车': 'bus',
+  '自行车': 'bicycle', '摩托车': 'motorcycle', '火车': 'train', '飞机': 'airplane', '船': 'boat',
+  '房子': 'house', '房屋': 'house', '建筑': 'building', '楼': 'building', '桥': 'bridge',
+  '门': 'door', '窗': 'window', '窗户': 'window', '墙': 'wall',
+  '桌子': 'table', '椅子': 'chair', '沙发': 'couch', '床': 'bed', '柜子': 'cabinet',
+  '杯子': 'cup', '瓶子': 'bottle', '碗': 'bowl', '盘子': 'plate',
+  '手机': 'cell phone', '电脑': 'laptop', '笔记本': 'laptop', '键盘': 'keyboard',
+  '鼠标': 'mouse', '显示器': 'monitor', '电视': 'tv', '耳机': 'headphone', '相机': 'camera',
+  '书': 'book', '包': 'bag', '背包': 'backpack', '帽子': 'hat', '鞋': 'shoe',
+  '衣服': 'clothes', '眼镜': 'glasses', '口罩': 'mask', '手表': 'watch',
+  '苹果': 'apple', '香蕉': 'banana', '橘子': 'orange', '橙子': 'orange',
+  '西瓜': 'watermelon', '水果': 'fruit', '蔬菜': 'vegetable', '食物': 'food',
+  '蛋糕': 'cake', '面包': 'bread',
+  '天空': 'sky', '云': 'cloud', '山': 'mountain', '河': 'river', '水': 'water',
+  '海': 'sea', '沙滩': 'beach', '路': 'road', '灯': 'lamp', '钟': 'clock',
+};
+
+/** 中文提示词 → 英文；不含中文或无法翻译时原样返回 */
+export function normalizePrompt(text: string): string {
+  const src = (text || '').trim();
+  if (!src) return src;
+  const exact = PROMPT_ZH_TO_EN[src];
+  if (exact) return exact;
+  if (!/[\u4e00-\u9fa5]/.test(src)) return src;    // 本来就是英文/数字
+
+  // 长词优先替换，避免「花朵」被「花」先吃掉
+  const keys = Object.keys(PROMPT_ZH_TO_EN).sort((a, b) => b.length - a.length);
+  let out = src;
+  for (const k of keys) out = out.split(k).join(PROMPT_ZH_TO_EN[k]);
+  // 还残留中文就说明没翻译全，原样发出去（让后端/模型自己处理）
+  return /[\u4e00-\u9fa5]/.test(out) ? src : out;
+}
+
+/** 给 UI 用：当前提示词是否会被自动翻译 */
+export function promptNeedsTranslation(text: string): boolean {
+  const src = (text || '').trim();
+  return !!src && /[\u4e00-\u9fa5]/.test(src);
+}
+
 // ====== Python 后端配置 ======
 let SAM_SERVER_URL = 'http://127.0.0.1:1421';
+
+/** fetch 包装：把「Failed to fetch」这种底层网络错误翻译成能照着做的提示。
+ *  浏览器只在网络层失败时抛这个（后端没起、端口不对、被防火墙拦），
+ *  跟提示词是中文还是英文完全没有关系。 */
+async function safeFetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (e: any) {
+    // 用户点「取消」时我们会 abort 请求，这种错误要原样抛给上层，不能当成「连不上后端」
+    if (e && (e.name === 'AbortError' || e.code === 20)) throw e;
+    throw new Error(
+      `连不上 SAM 后端（${SAM_SERVER_URL}）。请先启动 Python 服务（sam_server.py），` +
+      `看到控制台输出 SAM_SERVER_READY 后，再在「SAM 智能分割」弹窗里点「连接后端」。`
+    );
+  }
+}
 
 export async function ensureSidecar(): Promise<string> {
   const isTauri = !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__; if (!isTauri) return SAM_SERVER_URL;
@@ -85,7 +150,7 @@ function imageKey(img: HTMLImageElement): string {
  */
 export async function loadModel(_encoderFile: File, _decoderFile: File): Promise<void> {
   try {
-    const resp = await fetch(`${SAM_SERVER_URL}/health`);
+    const resp = await safeFetch(`${SAM_SERVER_URL}/health`);
     const data = await resp.json();
     serverReady = data.model_loaded === true;
     if (!serverReady) {
@@ -125,7 +190,7 @@ export async function segment(
   const key = imageKey(image);
   if (cachedImageKey !== key) {
     const b64 = imageToBase64(image);
-    const resp = await fetch(`${SAM_SERVER_URL}/embed`, {
+    const resp = await safeFetch(`${SAM_SERVER_URL}/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image_base64: b64 }),
@@ -150,7 +215,7 @@ export async function segment(
   if (box) {
     body.box = [box.x, box.y, box.x + box.w, box.y + box.h];
   }
-  const resp = await fetch(`${SAM_SERVER_URL}/predict`, {
+  const resp = await safeFetch(`${SAM_SERVER_URL}/predict`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -189,12 +254,13 @@ export async function segmentByText(
 ): Promise<PcsInstance[]> {
   if (!serverReady) throw new Error('SAM 后端服务未连接');
   if (!text.trim()) throw new Error('请输入要检测的文本');
+  const prompt = normalizePrompt(text);
 
   // 1. 图片编码（复用缓存）
   const key = imageKey(image);
   if (cachedImageKey !== key) {
     const b64 = imageToBase64(image);
-    const resp = await fetch(`${SAM_SERVER_URL}/embed`, {
+    const resp = await safeFetch(`${SAM_SERVER_URL}/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image_base64: b64 }),
@@ -206,12 +272,12 @@ export async function segmentByText(
   }
 
   // 2. 文本分割
-  const resp = await fetch(`${SAM_SERVER_URL}/pcs`, {
+  const resp = await safeFetch(`${SAM_SERVER_URL}/pcs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       image_id: cachedImageId,
-      text: text.trim(),
+      text: prompt,
       confidence_threshold: confidenceThreshold,
     }),
   });
@@ -243,7 +309,7 @@ export async function poseDetect(
   conf: number = 0.25
 ): Promise<PosePerson[]> {
   const b64 = imageToBase64(image);
-  const resp = await fetch(`${SAM_SERVER_URL}/pose`, {
+  const resp = await safeFetch(`${SAM_SERVER_URL}/pose`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ image_base64: b64, conf }),
@@ -263,7 +329,7 @@ export async function faceDetect(
   image: HTMLImageElement
 ): Promise<{ keypoints: { x: number; y: number }[] }[]> {
   const b64 = imageToBase64(image);
-  const resp = await fetch(`${SAM_SERVER_URL}/face`, {
+  const resp = await safeFetch(`${SAM_SERVER_URL}/face`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ image_base64: b64 }),
@@ -286,11 +352,30 @@ export function clearCache(): void {
 
 // ====== 批量预标注 ======
 
+/** 批量任务逐张回调，用于驱动进度条 */
+export interface BatchTaskProgress {
+  /** 已处理张数（1-based） */
+  done: number;
+  total: number;
+  name: string;
+  /** 这张图命中的实例/目标数 */
+  count: number;
+  elapsed_ms: number;
+}
+
+export interface BatchOptions {
+  onProgress?: (p: BatchTaskProgress) => void | Promise<void>;
+  /** 返回 true 时在当前图片处理完后停止 */
+  shouldCancel?: () => boolean;
+}
+
 export interface BatchPcsResult {
   name: string;
   instances: PcsInstance[];
   count: number;
   elapsed_ms: number;
+  /** 单张失败的原因；成功时为 undefined。批量不会因为一张失败就整体中断 */
+  error?: string;
 }
 
 async function urlToBase64(url: string): Promise<string> {
@@ -304,29 +389,83 @@ async function urlToBase64(url: string): Promise<string> {
   });
 }
 
+/** 图片 base64 → image_id（SAM3 编码，每张约 1~2s）。
+ *  /pcs 与 /predict 都只认 image_id，所以批量必须逐张先 embed。 */
+async function embedImageBase64(b64: string, signal?: AbortSignal): Promise<string> {
+  const resp = await safeFetch(SAM_SERVER_URL + '/embed', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_base64: b64 }),
+    signal,
+  });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`图片编码失败 ${resp.status}${body ? ': ' + body.slice(0, 120) : ''}`);
+  }
+  const data = await resp.json();
+  if (!data?.image_id) throw new Error('后端未返回 image_id');
+  return data.image_id as string;
+}
+
 export async function batchPcs(
   dataUrls: string[],
   text: string,
-  confidenceThreshold: number = 0.5
+  confidenceThreshold: number = 0.5,
+  opts: BatchOptions = {}
 ): Promise<BatchPcsResult[]> {
   const results: BatchPcsResult[] = [];
-  for (let i = 0; i < dataUrls.length; i++) {
-    const t0 = Date.now();
-    const b64 = await urlToBase64(dataUrls[i]);
-    const resp = await fetch(SAM_SERVER_URL + '/pcs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_base64: b64, text: text.trim(), confidence_threshold: confidenceThreshold }),
-    });
-    if (!resp.ok) throw new Error('批量PCS失败: ' + resp.status);
-    const data = await resp.json();
-    const insts = (data.instances || []).map((inst: any) => ({
-      polygon: (inst.polygon || []).map((pt: number[]) => ({ x: pt[0], y: pt[1] })),
-      score: inst.score || 0,
-      box: { x1: inst.box?.[0] ?? 0, y1: inst.box?.[1] ?? 0, x2: inst.box?.[2] ?? 0, y2: inst.box?.[3] ?? 0 },
-    }));
-    results.push({ name: 'img_' + i, count: insts.length, elapsed_ms: Date.now() - t0, instances: insts });
+  const total = dataUrls.length;
+  const prompt = normalizePrompt(text);   // 中文提示词先转英文
+
+  // 取消要「立刻」生效：轮询 shouldCancel，一旦置位就 abort 正在跑的那个请求，
+  // 否则用户点取消后还得等当前这张 embed+pcs 跑完（大图可能十几秒），看着就像卡死。
+  const ac = new AbortController();
+  const watch = setInterval(() => { if (opts.shouldCancel?.()) ac.abort(); }, 150);
+
+  try {
+    for (let i = 0; i < total; i++) {
+      if (opts.shouldCancel?.()) break;
+      const t0 = Date.now();
+      const name = 'img_' + i;
+
+      try {
+        const b64 = await urlToBase64(dataUrls[i]);
+        if (opts.shouldCancel?.()) break;
+        // 关键修复：先 /embed 拿 image_id。之前直接把 image_base64 发给 /pcs，
+        // 而 PcsRequest 必填 image_id → 第一张就 422，整批中断。
+        const imageId = await embedImageBase64(b64, ac.signal);
+        if (opts.shouldCancel?.()) break;
+        const resp = await safeFetch(SAM_SERVER_URL + '/pcs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_id: imageId, text: prompt, confidence_threshold: confidenceThreshold }),
+          signal: ac.signal,
+        });
+        if (!resp.ok) {
+          const body = await resp.text().catch(() => '');
+          throw new Error(`文本分割失败 ${resp.status}${body ? ': ' + body.slice(0, 120) : ''}`);
+        }
+        const data = await resp.json();
+        const insts = (data.instances || []).map((inst: any) => ({
+          polygon: (inst.polygon || []).map((pt: number[]) => ({ x: pt[0], y: pt[1] })),
+          score: inst.score || 0,
+          box: { x1: inst.box?.[0] ?? 0, y1: inst.box?.[1] ?? 0, x2: inst.box?.[2] ?? 0, y2: inst.box?.[3] ?? 0 },
+        }));
+        const elapsed = Date.now() - t0;
+        results.push({ name, count: insts.length, elapsed_ms: elapsed, instances: insts });
+        await opts.onProgress?.({ done: i + 1, total, name, count: insts.length, elapsed_ms: elapsed });
+      } catch (e: any) {
+        if (e?.name === 'AbortError') break;   // 用户取消，直接结束整批
+        // 单张失败不影响后续图片
+        const elapsed = Date.now() - t0;
+        results.push({ name, count: 0, elapsed_ms: elapsed, instances: [], error: e?.message || String(e) });
+        await opts.onProgress?.({ done: i + 1, total, name, count: 0, elapsed_ms: elapsed });
+      }
+    }
+  } finally {
+    clearInterval(watch);
   }
+
   return results;
 }
 export interface BatchKpResult {
@@ -334,28 +473,57 @@ export interface BatchKpResult {
   objects: { keypoints: { x: number; y: number; conf?: number }[]; score: number }[];
   count: number;
   elapsed_ms: number;
+  error?: string;
 }
 
 export async function batchKp(
   dataUrls: string[],
   model: 'pose' | 'face',
-  conf: number = 0.25
+  conf: number = 0.25,
+  opts: BatchOptions = {}
 ): Promise<BatchKpResult[]> {
   const results: BatchKpResult[] = [];
   const endpoint = model === 'pose' ? 'pose' : 'face';
-  for (let i = 0; i < dataUrls.length; i++) {
-    const t0 = Date.now();
-    const b64 = await urlToBase64(dataUrls[i]);
-    const resp = await fetch(SAM_SERVER_URL + '/' + endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_base64: b64, conf }),
-    });
-    if (!resp.ok) throw new Error('批量' + model + '失败: ' + resp.status);
-    const data = await resp.json();
-    const arr = data.persons || data.faces || [];
-    const objs = arr.map((o: any) => ({ keypoints: (o.keypoints || []).map((k: number[]) => ({ x: k[0], y: k[1] })), score: o.score || 0 }));
-    results.push({ name: 'img_' + i, count: objs.length, elapsed_ms: Date.now() - t0, objects: objs });
+  const total = dataUrls.length;
+
+  const ac = new AbortController();
+  const watch = setInterval(() => { if (opts.shouldCancel?.()) ac.abort(); }, 150);
+
+  try {
+    for (let i = 0; i < total; i++) {
+      if (opts.shouldCancel?.()) break;
+      const t0 = Date.now();
+      const name = 'img_' + i;
+
+      try {
+        const b64 = await urlToBase64(dataUrls[i]);
+        if (opts.shouldCancel?.()) break;
+        const resp = await safeFetch(SAM_SERVER_URL + '/' + endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: b64, conf }),
+          signal: ac.signal,
+        });
+        if (!resp.ok) {
+          const body = await resp.text().catch(() => '');
+          throw new Error(`${model === 'pose' ? '姿态' : '人脸'}检测失败 ${resp.status}${body ? ': ' + body.slice(0, 120) : ''}`);
+        }
+        const data = await resp.json();
+        const arr = data.persons || data.faces || [];
+        const objs = arr.map((o: any) => ({ keypoints: (o.keypoints || []).map((k: number[]) => ({ x: k[0], y: k[1] })), score: o.score || 0 }));
+        const elapsed = Date.now() - t0;
+        results.push({ name, count: objs.length, elapsed_ms: elapsed, objects: objs });
+        await opts.onProgress?.({ done: i + 1, total, name, count: objs.length, elapsed_ms: elapsed });
+      } catch (e: any) {
+        if (e?.name === 'AbortError') break;
+        const elapsed = Date.now() - t0;
+        results.push({ name, count: 0, elapsed_ms: elapsed, objects: [], error: e?.message || String(e) });
+        await opts.onProgress?.({ done: i + 1, total, name, count: 0, elapsed_ms: elapsed });
+      }
+    }
+  } finally {
+    clearInterval(watch);
   }
+
   return results;
 }

@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { untrack } from 'svelte';
   import { t, getLang } from '$lib/i18n.svelte';
   import { images, annotations, ui, getTotalAnnotationCount, getImagesWithAnnotations } from '$lib/state.svelte';
@@ -9,6 +9,7 @@
     onImportFolder: () => void;
     onImportFiles: () => void;
     onDeleteImage: (index: number) => void;
+    onClearImages: () => void;
   }
   let props: Props = $props();
 
@@ -24,9 +25,11 @@
     if (ui.workMode === 'classification') {
       const imgNames = images.map(i => i.name); const labeled = imgNames.filter(k => (ui.imageLabels[k] || []).length > 0).length;
       const total = imgNames.reduce((s, k) => s + (ui.imageLabels[k] || []).length, 0);
-      return `${labeled}/${images.length} 已打标 | ${total} 个标签`;
+      // 明确区分「图片张数」和「标签个数」，避免把 13 个标签读成 13 张图
+      return `已打标 ${labeled} 张 / 共 ${images.length} 张 · ${total} 个标签`;
     }
-    return `${getImagesWithAnnotations().length}/${images.length} ${t('annotated')} | ${getTotalAnnotationCount()} ${t('totalAnnotations')}`;
+    // 原来写成「3/28 已标注 | 13 个标注」，容易被读成「28 张里 13 张已标注」
+    return `已标注 ${getImagesWithAnnotations().length} 张 / 共 ${images.length} 张 · ${getTotalAnnotationCount()} 处标注`;
   });
 
   const totalHeight = $derived(images.length * ITEM_HEIGHT);
@@ -77,6 +80,9 @@
   <div class="import-buttons">
     <button class="btn-sm" onclick={props.onImportFolder}><Icon name="folder" size={14} /> {t('importFolder')}</button>
     <button class="btn-sm" onclick={props.onImportFiles}><Icon name="image" size={14} /> {t('addFiles')}</button>
+    <button class="btn-sm btn-clear" onclick={props.onClearImages} title="清空图片列表（标注数据保留）">
+      <Icon name="trash" size={13} /> 清空
+    </button>
   </div>
   <div class="file-list-container" bind:this={listContainer} onscroll={handleScroll}>
     <div class="file-list" style="height:{totalHeight}px">
@@ -170,6 +176,16 @@
     transform: translateY(-1px);
   }
   .import-buttons .btn-sm:active { transform: translateY(0); }
+  /* 清空按钮不参与平分宽度，保持紧凑 */
+  .import-buttons .btn-sm.btn-clear {
+    flex: 0 0 auto;
+    padding: 8px 10px;
+    color: var(--text-muted);
+  }
+  .import-buttons .btn-sm.btn-clear:hover {
+    color: #f85149;
+    border-color: #f85149;
+  }
   .file-list-container {
     flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
     margin-top: 10px;

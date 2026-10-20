@@ -14,7 +14,7 @@ $env:TRITON_CACHE_DIR = "E:\TorchHub\triton_cache"
 $env:PYTHONIOENCODING = "utf-8"
 
 $python = "D:\79458\Documents\anaconda3\envs\deeplearning\python.exe"
-$script = "D:\桌面\图像标注\annotator-pro\src-tauri\target\release\sidecar\sam_server.py"
+$script = Join-Path $PSScriptRoot "src-tauri\target\release\sidecar\sam_server.py"
 
 Write-Host "[1/2] Loading SAM3 model (10-30s, do not close)..." -ForegroundColor Yellow
 Write-Host ""

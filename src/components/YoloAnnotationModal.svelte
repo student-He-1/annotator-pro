@@ -1,8 +1,9 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t } from '$lib/i18n.svelte';
-  import { ui, images, addAnnotation, showToast, getNextAnnotationId } from '$lib/state.svelte';
+  import { ui, images, annotations, addAnnotation, showToast, getNextAnnotationId, pushHistory, saveAnnotations } from '$lib/state.svelte';
   import { loadModel, isModelLoaded, getModelName, getClassNames, detect, DEFAULT_YOLO_CONFIG } from '$lib/yolo';
   import type { Detection } from '$lib/yolo';
+  import type { Annotation } from '$lib/types';
 
   interface Props {
     onClose: () => void;
@@ -85,36 +86,65 @@
       progress = { current: 0, total: images.length };
       let totalDetections = 0;
 
+      const failed: string[] = [];
       for (let i = 0; i < images.length; i++) {
         progress.current = i + 1;
+        await new Promise(r => setTimeout(r, 0));   // 让进度条有机会刷新
         const imgData = images[i];
         const img = new Image();
         img.src = imgData.dataUrl;
-        await new Promise(resolve => { img.onload = resolve; });
+        await new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
 
-        const dets = await detect(img, {
-          confThreshold,
-          iouThreshold,
-          inputSize,
-          modelFormat: 'auto',
-        });
-
-        // 直接添加到标注
-        for (const det of dets) {
-          addAnnotation({
-            type: 'rect',
-            x: Math.max(0, det.x),
-            y: Math.max(0, det.y),
-            w: det.w,
-            h: det.h,
-            className: det.className,
-            id: getNextAnnotationId(),
+        try {
+          const dets = await detect(img, {
+            confThreshold,
+            iouThreshold,
+            inputSize,
+            modelFormat: 'auto',
           });
+
+          // 关键修复：不能再用 addAnnotation()。
+          // 它写的是 images[ui.currentImageIndex] 那一条，而批量循环从不切索引，
+          // 结果就是 N 张图的检测框全部堆到「当前这张」上，数据被污染。
+          const name = imgData.name;
+          const existing = annotations[name] || [];
+          let nextId = existing.length > 0 ? Math.max(...existing.map(a => a.id)) + 1 : 0;
+          const iw = imgData.width || img.naturalWidth;
+          const ih = imgData.height || img.naturalHeight;
+
+          const newAnns: Annotation[] = [];
+          for (const det of dets) {
+            // 夹到图片范围内，避免框越界
+            const x = Math.max(0, Math.min(det.x, iw));
+            const y = Math.max(0, Math.min(det.y, ih));
+            newAnns.push({
+              type: 'rect',
+              x, y,
+              w: Math.max(1, Math.min(det.w, iw - x)),
+              h: Math.max(1, Math.min(det.h, ih - y)),
+              className: det.className,
+              id: nextId++,
+            });
+          }
+          if (newAnns.length > 0) {
+            annotations[name] = [...existing, ...newAnns];
+            totalDetections += newAnns.length;
+          }
+        } catch (e: any) {
+          failed.push(`${imgData.name}: ${e?.message || e}`);
         }
-        totalDetections += dets.length;
       }
 
-      showToast(`Auto-annotated ${images.length} images, ${totalDetections} objects`, 'success');
+      pushHistory();
+      saveAnnotations();
+      if (failed.length > 0) {
+        showToast(
+          `Auto-annotated ${images.length - failed.length}/${images.length} images, ${totalDetections} objects；失败 ${failed.length} 张（${failed[0]}）`,
+          'error'
+        );
+      } else {
+        showToast(`Auto-annotated ${images.length} images, ${totalDetections} objects`, 'success');
+      }
       onClose();
     } catch (e: any) {
       showToast(`Batch detection failed: ${e.message}`, 'error');

@@ -9,7 +9,7 @@
   import { render } from '$lib/canvas/engine.svelte';
   import type { ExportFormat, Annotation } from '$lib/types';
   import Icon from './Icon.svelte';
-  import { segmentByText, isModelLoaded, clearCache as clearSamCache, poseDetect, faceDetect, batchPcs, batchKp } from '$lib/sam';
+  import { segmentByText, isModelLoaded, clearCache as clearSamCache, poseDetect, faceDetect, batchPcs, batchKp, normalizePrompt, promptNeedsTranslation } from '$lib/sam';
   import type { PcsInstance } from '$lib/sam';
 
   interface Props {
@@ -265,6 +265,22 @@
   let batchModel = $state<'pose' | 'face' | 'pcs'>('pose');
   let batchScope = $state<'empty' | 'all'>('empty');
   let batchText = $state('');
+  // 取消标志用普通变量：批量循环每张读一次即可，不需要驱动渲染
+  let batchCancelFlag = false;
+  let batchCancelling = $state(false);
+
+  function cancelBatch() {
+    batchCancelFlag = true;
+    batchCancelling = true;
+    showToast('正在取消，正在中断当前请求...', 'info');
+  }
+
+  /** 该图片下一个可用标注 id。不能用 getNextAnnotationId()——它只读当前图片，
+   *  批量写的是别的图，会导致所有图共用同一批 id。 */
+  function nextIdFor(imgName: string): number {
+    const anns = annotations[imgName];
+    return anns && anns.length > 0 ? Math.max(...anns.map(a => a.id)) + 1 : 0;
+  }
 
   async function handleBatch() {
     if (batchRunning) return;
@@ -276,46 +292,77 @@
     if (batchModel === 'pcs' && !batchText.trim()) { showToast('请输入文本词', 'error'); return; }
     if (!confirm('将对 ' + targets.length + ' 张图片执行批量，开始？')) return;
 
+    batchRunning = true;
+    batchCancelFlag = false;
+    batchCancelling = false;
+    batchTotal = targets.length;
+    batchProgress = 0;
+    const failed: { name: string; error: string }[] = [];
+    let added = 0;
+
+    // 每处理完一张让出一帧，否则进度条在整批期间都停在 0，看起来就像卡死
+    const onProgress = async (p: { done: number }) => {
+      batchProgress = p.done;
+      await new Promise(r => setTimeout(r, 0));
+    };
+    const opts = { onProgress, shouldCancel: () => batchCancelFlag };
+
     try {
-      batchRunning = true;
-      batchTotal = targets.length;
-      batchProgress = 0;
       const dataUrls = targets.map(ii => ii.dataUrl);
 
       if (batchModel === 'pcs') {
-        const results = await batchPcs(dataUrls, batchText, 0.5);
+        const results = await batchPcs(dataUrls, batchText, pcsThreshold, opts);
         for (let i = 0; i < results.length; i++) {
           const name = targets[i].name;
-          const insts = results[i].instances;
-          const newAnns = [];
-          for (const inst of insts) {
+          const r = results[i];
+          if (r.error) { failed.push({ name, error: r.error }); continue; }
+          // scope=all 时该图可能已有标注，id 要接着它自己的最大值往后排
+          let id = nextIdFor(name);
+          const newAnns: Annotation[] = [];
+          for (const inst of r.instances) {
             if (inst.polygon.length < 3) continue;
-            newAnns.push({ type: 'polygon', points: inst.polygon, className: getActiveClass(), id: Date.now() + i * 10000 + newAnns.length });
+            newAnns.push({ type: 'polygon', points: inst.polygon, className: getActiveClass(), id: id++ });
           }
-          annotations[name] = [...(annotations[name] || []), ...newAnns];
-          batchProgress = i + 1;
+          if (newAnns.length > 0) {
+            annotations[name] = [...(annotations[name] || []), ...newAnns];
+            added += newAnns.length;
+          }
         }
       } else {
-        const results = await batchKp(dataUrls, batchModel, 0.25);
+        const results = await batchKp(dataUrls, batchModel, 0.25, opts);
         for (let i = 0; i < results.length; i++) {
           const name = targets[i].name;
-          const objs = results[i].objects;
-          const newAnns = [];
-          for (const o of objs) {
-            newAnns.push({ type: 'keypoint', points: o.keypoints.map(k => ({ x: k.x, y: k.y })), className: getActiveClass(), id: Date.now() + i * 10000 + newAnns.length });
+          const r = results[i];
+          if (r.error) { failed.push({ name, error: r.error }); continue; }
+          let id = nextIdFor(name);
+          const newAnns: Annotation[] = [];
+          for (const o of r.objects) {
+            newAnns.push({ type: 'keypoint', points: o.keypoints.map(k => ({ x: k.x, y: k.y })), className: getActiveClass(), id: id++ });
           }
-          annotations[name] = [...(annotations[name] || []), ...newAnns];
-          batchProgress = i + 1;
+          if (newAnns.length > 0) {
+            annotations[name] = [...(annotations[name] || []), ...newAnns];
+            added += newAnns.length;
+          }
         }
       }
+
       pushHistory();
       saveAnnotations();
       render();
-      showToast('批量完成: ' + batchProgress + '/' + batchTotal, 'success');
+
+      const doneText = `${batchProgress}/${batchTotal}`;
+      if (batchCancelFlag) {
+        showToast(`已取消：处理 ${doneText}，新增 ${added} 个标注`, 'info');
+      } else if (failed.length > 0) {
+        showToast(`批量完成 ${doneText}，新增 ${added} 个；失败 ${failed.length} 张（${failed[0].name}: ${failed[0].error}）`, 'error');
+      } else {
+        showToast(`批量完成 ${doneText}，新增 ${added} 个标注`, 'success');
+      }
     } catch (e: any) {
-      showToast('批量失败: ' + (e.message || e), 'error');
+      showToast('批量失败: ' + (e?.message || e), 'error');
     } finally {
       batchRunning = false;
+      batchCancelling = false;
     }
   }
 </script>
@@ -358,9 +405,20 @@
 
         <div class="sub-section">
           <div class="sub-title">文本提示（PCS）</div>
-          <input type="text" class="pcs-input" placeholder="输入类别，如 cat/狗"
+          <input type="text" class="pcs-input" placeholder="英文最准，如 cat / flower（也可直接输中文）"
             bind:value={pcsText}
             onkeydown={(e) => { if (e.key === 'Enter' && !pcsRunning) handlePcsDetect(); }} />
+          {#if pcsText.trim()}
+            <div class="pcs-hint">
+              {#if promptNeedsTranslation(pcsText)}
+                将按英文「{normalizePrompt(pcsText)}」送给模型（SAM3 文本编码器只支持英文）
+              {:else}
+                提示词：{pcsText.trim()}
+              {/if}
+            </div>
+          {:else}
+            <div class="pcs-hint">模型只认英文提示词，中文会自动转成英文（如「花朵」→ flower）</div>
+          {/if}
           <div class="pcs-threshold-row">
             <label>阈值</label>
             <input type="number" step="0.05" min="0.05" max="0.95" bind:value={pcsThreshold} />
@@ -424,7 +482,7 @@
         </select>
       </div>
       {#if batchModel === 'pcs'}
-        <input type="text" class="pcs-input" placeholder="输入类别，如 cat/狗" bind:value={batchText}>
+        <input type="text" class="pcs-input" placeholder="英文最准，如 flower（也可输中文）" bind:value={batchText}>
       {/if}
       <div class="batch-row">
         <label>范围</label>
@@ -438,6 +496,10 @@
       </button>
       {#if batchRunning}
         <div class="batch-progress">{batchProgress} / {batchTotal}</div>
+        <div class="batch-bar"><div class="batch-bar-fill" style="width:{batchTotal ? Math.round(batchProgress / batchTotal * 100) : 0}%"></div></div>
+        <button class="btn-sm batch-cancel" onclick={cancelBatch} disabled={batchCancelling}>
+          {batchCancelling ? '取消中...' : '取消'}
+        </button>
       {/if}
     </div>
 
@@ -875,6 +937,13 @@
     box-sizing: border-box;
   }
   .pcs-input:focus { outline: none; border-color: #58a6ff; }
+  .pcs-hint {
+    margin-top: 4px;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--text-muted, #8b949e);
+    word-break: break-all;
+  }
   .pcs-threshold-row {
     display: flex; align-items: center; gap: 8px;
     margin-top: 8px; font-size: 11px; color: var(--text-secondary);
@@ -926,6 +995,9 @@
   .batch-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: var(--text-secondary); }
   .batch-row select { flex: 1; padding: 4px 6px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 11px; }
   .batch-progress { margin-top: 6px; font-size: 11px; color: var(--accent-blue); font-family: var(--font-mono); }
+  .batch-bar { margin-top: 6px; height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden; }
+  .batch-bar-fill { height: 100%; background: var(--accent-blue); border-radius: 2px; transition: width 0.2s ease; }
+  .batch-cancel { margin-top: 6px; }
 </style>
 
 
