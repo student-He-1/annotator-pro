@@ -6,7 +6,7 @@
  *  分割模式下 `annotations[name]` 恒为空，所以检测/分类的渲染、导出、统计、
  *  撤销逻辑天然碰不到掩膜数据。
  */
-import { ui, images, showToast, markModified, saveAnnotations, registerMaskPersistence } from '../state.svelte';
+import { ui, images, imageModified, showToast, markModified, saveAnnotations, registerMaskPersistence } from '../state.svelte';
 import { normalizePrompt } from '../sam';
 import { DEFAULT_SEG_COLORS, SEG_PRESETS, SEG_ZH_TO_EN, STUFF_CLASSES, colorForNewSegClass, inferKind } from './presets';
 import {
@@ -14,7 +14,7 @@ import {
 } from './rle';
 import { buildOverlayCanvas } from './overlay';
 import { pcsWithMask, predictWithPoints, clearSegSamCache, connectSegBackend, isSegMaskSupported, isSegServerReady } from './samMask';
-import type { ImageMask, MaskCandidate, MaskRegion, MaskRegionKind, ProjectMask, SegmentationSettings } from './types';
+import type { ImageMask, MaskCandidate, MaskRegion, MaskRegionKind, ProjectMask, SegmentationSettings, SegSweepResult } from './types';
 
 const MAX_MASK_HISTORY = 30;
 const MAX_DECODED = 2;
@@ -119,11 +119,24 @@ function storeMask(name: string, mask: ImageMask, map: Uint8Array | null, opts: 
  *  刻意**复用**检测/分类那套保存链路（`markModified` → `imageModified` → 500 ms 防抖 → `saveAnnotationsNow`），
  *  于是：工具栏「保存标注」按钮、Ctrl+S、状态栏「已保存/未保存」三种模式行为完全一致，
  *  不再出现「分割模式永远显示未保存、按保存键还没反应」。
- *  掩膜的真正落盘在 `persistMasksToStorage`（由 state 在保存时回调）。 */
+ *  批量扫描会改到**非当前图**，那条路径走 `markMaskDirtyFor`（直接写 imageModified[name]）。 */
 function markMaskDirty(name: string) {
   storageDirty = true;
   if (name) ui.maskDirty[name] = true;
-  markModified();
+  if (name && name === currentName()) {
+    markModified();
+  } else {
+    markMaskDirtyFor(name);
+  }
+}
+
+/** 非当前图（批量扫描）的脏标记：不能走 markModified（它只认当前图） */
+function markMaskDirtyFor(name: string) {
+  storageDirty = true;
+  if (!name) return;
+  ui.maskDirty[name] = true;
+  imageModified[name] = true;
+  saveAnnotations();
 }
 
 function refreshMeta() {
@@ -678,6 +691,7 @@ export function getSegOverlay(): HTMLCanvasElement | null {
   const key = [
     name, ui.maskRev, ui.segSelectedRegion, ui.segOverlayMode, ui.segOverlayOpacity,
     ui.segShowOverlay ? 1 : 0, ui.segShowCandidate ? 1 : 0, candCount, (map ? map.length : 0),
+    ui.segHoverCandidate,
   ].join('|');
   if (overlayCache && overlayCache.key === key) return overlayCache.canvas;
 
@@ -694,6 +708,7 @@ export function getSegOverlay(): HTMLCanvasElement | null {
     candidates,
     hiddenCandidates,
     selected: ui.segSelectedRegion,
+    hoverCandidate: ui.segHoverCandidate,
     mode: ui.segOverlayMode,
     opacity: ui.segOverlayOpacity,
     showOverlay: ui.segShowOverlay,
@@ -718,13 +733,25 @@ export async function checkSegBackend(): Promise<void> {
 
 export function onImageSwitched() {
   clearCandidates();
-  clearSegSamCache();
+  // 注意：**不清** embed 缓存了（P2 的多图 LRU）—— 切图回来是 0 成本，不用重编码 1~2 s
   ui.segSweepResults = [];
   ui.segSweepRunning = false;
   ui.segSweepCancel = false;
   ui.segSweepDone = 0;
   ui.segSweepTotal = 0;
   ui.segSweepCurrent = '';
+  ui.segBatchRunning = false;
+  ui.segBatchDone = 0;
+  ui.segBatchTotal = 0;
+  ui.segBatchCurrent = '';
+  ui.segHoverCandidate = 0;
+}
+
+/** 候选 hover 预览（面板 onmouseenter/leave 调用） */
+export function setHoverCandidate(k: number) {
+  if (ui.segHoverCandidate === k) return;
+  ui.segHoverCandidate = k;
+  bump();
 }
 
 // ============================================================
@@ -766,6 +793,77 @@ export function cancelClassSweep() {
   if (ui.segSweepRunning) ui.segSweepCancel = true;
 }
 
+function orderedSweepClasses(wanted: string[]): string[] {
+  // stuff（road/sky）先铺底，thing（car/person）后叠上去 —— 单索引图是「后写覆盖先写」
+  return [...wanted].sort(
+    (a, b) => (presetKindOf(a) === 'stuff' ? 0 : 1) - (presetKindOf(b) === 'stuff' ? 0 : 1),
+  );
+}
+
+interface SweepWordOutcome {
+  result: SegSweepResult;
+  accepted: number;
+  checkpointed: boolean;
+}
+
+/** 对**一张图**跑一个词，高置信的直接合并。
+ *  `allowCheckpoint`：这张图/这一轮是否还允许记撤销点（整轮只记第一个）。 */
+async function sweepOneWord(
+  img: HTMLImageElement,
+  name: string,
+  cls: string,
+  allowCheckpoint: boolean,
+): Promise<SweepWordOutcome> {
+  const wordStart = performance.now();
+  const elapsed = () => Math.round(performance.now() - wordStart);
+  try {
+    const res = await pcsWithMask(img, normalizeSegPrompt(cls) || cls, ui.segConfThreshold);
+    if (!res.map || res.instances.length === 0) {
+      return { result: { className: cls, total: 0, accepted: 0, review: 0, elapsedMs: elapsed() }, accepted: 0, checkpointed: false };
+    }
+    const areaLut = new Uint32Array(256);
+    for (let i = 0; i < res.map.length; i++) { const v = res.map[i]; if (v) areaLut[v]++; }
+
+    const auto: CandidateItem[] = [];
+    let review = 0;
+    // 同类内部按面积从大到小，小目标最后覆盖（避免被同类大 mask 吃掉）
+    const idxs = res.instances.map((_, i) => i).sort((a, b) => (areaLut[b + 1] - areaLut[a + 1]));
+    for (const i of idxs) {
+      const k = i + 1;
+      if (k > 255) continue;
+      const area = areaLut[k] || 0;
+      if (!area) continue;
+      const inst = res.instances[i];
+      if (inst.score >= ui.segSweepAutoAccept) {
+        auto.push({ k, className: cls, kind: presetKindOf(cls), score: inst.score, box: inst.box, area });
+      } else {
+        review++;
+      }
+    }
+
+    let accepted = 0;
+    let checkpointed = false;
+    if (auto.length > 0) {
+      const added = applyCandidateItems(name, res.map, res.width, res.height, auto, {
+        checkpoint: allowCheckpoint,
+        silent: true,
+      });
+      if (added) { accepted = added; checkpointed = allowCheckpoint; }
+    }
+    return {
+      result: { className: cls, total: auto.length + review, accepted, review, elapsedMs: elapsed() },
+      accepted,
+      checkpointed,
+    };
+  } catch (e: any) {
+    return {
+      result: { className: cls, total: 0, accepted: 0, review: 0, elapsedMs: elapsed(), error: e?.message || String(e) },
+      accepted: 0,
+      checkpointed: false,
+    };
+  }
+}
+
 export async function runClassSweep(onProgress?: () => void): Promise<void> {
   const img = ui.currentImage;
   const name = currentName();
@@ -794,80 +892,14 @@ export async function runClassSweep(onProgress?: () => void): Promise<void> {
       if (!st.ready) { showToast(st.error || '后端未就绪', 'error'); ui.segSweepRunning = false; return; }
     }
 
-    // stuff（road/sky）先铺底，thing（car/person）后叠上去 —— 单索引图是「后写覆盖先写」
-    const ordered = [...wanted].sort(
-      (a, b) => (presetKindOf(a) === 'stuff' ? 0 : 1) - (presetKindOf(b) === 'stuff' ? 0 : 1),
-    );
-
-    for (const cls of ordered) {
+    for (const cls of orderedSweepClasses(wanted)) {
       if (ui.segSweepCancel) break;
       ui.segSweepCurrent = cls;
-      const wordStart = performance.now();
-      try {
-        const res = await pcsWithMask(img, normalizeSegPrompt(cls) || cls, ui.segConfThreshold);
-        const w = res.width;
-        const h = res.height;
-        if (res.map && res.instances.length > 0) {
-          const areaLut = new Uint32Array(256);
-          for (let i = 0; i < res.map.length; i++) { const v = res.map[i]; if (v) areaLut[v]++; }
-          const auto: CandidateItem[] = [];
-          let review = 0;
-          // 同类内部按面积从大到小，小目标最后覆盖（避免被同类大 mask 吃掉）
-          const idxs = res.instances.map((_, i) => i).sort((a, b) => (areaLut[b + 1] - areaLut[a + 1]));
-          for (const i of idxs) {
-            const k = i + 1;
-            if (k > 255) continue;
-            const area = areaLut[k] || 0;
-            if (!area) continue;
-            const inst = res.instances[i];
-            if (inst.score >= ui.segSweepAutoAccept) {
-              auto.push({
-                k,
-                className: cls,
-                kind: presetKindOf(cls),
-                score: inst.score,
-                box: inst.box,
-                area,
-              });
-            } else {
-              review++;
-            }
-          }
-          if (auto.length > 0) {
-            // 整轮只留一个撤销点：第一次合并时建档，之后复用
-            const added = applyCandidateItems(name, res.map, w, h, auto, {
-              checkpoint: !checkpointDone,
-              silent: true,
-            });
-            if (added) { checkpointDone = true; acceptedTotal += added; }
-          }
-          reviewTotal += review;
-          ui.segSweepResults = [...ui.segSweepResults, {
-            className: cls,
-            total: auto.length + review,
-            accepted: auto.length,
-            review,
-            elapsedMs: Math.round(performance.now() - wordStart),
-          }];
-        } else {
-          ui.segSweepResults = [...ui.segSweepResults, {
-            className: cls,
-            total: 0,
-            accepted: 0,
-            review: 0,
-            elapsedMs: Math.round(performance.now() - wordStart),
-          }];
-        }
-      } catch (e: any) {
-        ui.segSweepResults = [...ui.segSweepResults, {
-          className: cls,
-          total: 0,
-          accepted: 0,
-          review: 0,
-          elapsedMs: Math.round(performance.now() - wordStart),
-          error: e?.message || String(e),
-        }];
-      }
+      const out = await sweepOneWord(img, name, cls, !checkpointDone);
+      if (out.checkpointed) checkpointDone = true;
+      acceptedTotal += out.accepted;
+      reviewTotal += out.result.review;
+      ui.segSweepResults = [...ui.segSweepResults, out.result];
       ui.segSweepDone++;
       bump();
       // 逐词回调：让画布边扫边显示（store 不能 import engine，渲染由调用方传进来）
@@ -893,6 +925,107 @@ export async function runClassSweep(onProgress?: () => void): Promise<void> {
       'success',
     );
   }
+}
+
+/** 整目录批量扫描（P2）：对**每张已导入的图**跑同一套词表。
+ *
+ *  严格说它不再是「整轮一个撤销点」—— 撤销栈是按图存的，所以**每张图各自一个撤销点**，
+ *  切到那张图按 Ctrl+Z 只撤那张图。批量跨图撤销不做，避免把「合成一条跨图历史」的复杂度引进来。 */
+export async function runBatchSweep(onProgress?: () => void): Promise<void> {
+  if (ui.segSweepRunning) return;
+  const wanted = ui.segSweepClasses.filter(c => ui.segClasses.includes(c));
+  if (wanted.length === 0) { showToast('先在「一键扫描」里勾选要扫的类别', 'error'); return; }
+  const targets = images.filter(i => i.dataUrl);
+  if (targets.length === 0) { showToast('先导入图片', 'error'); return; }
+
+  ui.segSweepRunning = true;
+  ui.segSweepCancel = false;
+  ui.segBatchRunning = true;
+  ui.segBatchTotal = targets.length;
+  ui.segBatchDone = 0;
+  ui.segBatchCurrent = '';
+  ui.segSweepResults = [];
+  const ordered = orderedSweepClasses(wanted);
+  const t0 = performance.now();
+  const agg = new Map<string, SegSweepResult>();
+  let acceptedTotal = 0;
+  let reviewTotal = 0;
+  let failed = 0;
+  let processed = 0;
+
+  try {
+    if (!isSegServerReady() || !isSegMaskSupported()) {
+      const st = await connectSegBackend(true);
+      ui.segBackendReady = st.ready;
+      ui.segMaskSupported = st.maskSupported;
+      if (!st.ready) { showToast(st.error || '后端未就绪', 'error'); return; }
+    }
+
+    for (const info of targets) {
+      if (ui.segSweepCancel) break;
+      ui.segBatchCurrent = info.name;
+      bump();
+      try {
+        const img = await loadImageEl(info.dataUrl);
+        let checkpointDone = false;
+        for (const cls of ordered) {
+          if (ui.segSweepCancel) break;
+          ui.segSweepCurrent = cls;
+          const out = await sweepOneWord(img, info.name, cls, !checkpointDone);
+          if (out.checkpointed) checkpointDone = true;
+          acceptedTotal += out.accepted;
+          reviewTotal += out.result.review;
+          const a = agg.get(cls) || { className: cls, total: 0, accepted: 0, review: 0, elapsedMs: 0 };
+          a.total += out.result.total;
+          a.accepted += out.result.accepted;
+          a.review += out.result.review;
+          a.elapsedMs += out.result.elapsedMs;
+          if (out.result.error) a.error = out.result.error;
+          agg.set(cls, a);
+          bump();
+          try { onProgress?.(); } catch { /* 忽略 */ }
+        }
+        if (checkpointDone) markMaskDirtyFor(info.name);
+        processed++;
+      } catch (e: any) {
+        failed++;
+        console.warn('[segmentation] 批量扫描跳过这张图：', info.name, e);
+      }
+      ui.segBatchDone++;
+      ui.segSweepResults = [...agg.values()];
+      bump();
+      try { onProgress?.(); } catch { /* 忽略 */ }
+    }
+  } finally {
+    ui.segSweepRunning = false;
+    ui.segBatchRunning = false;
+    ui.segSweepCurrent = '';
+    ui.segBatchCurrent = '';
+    ui.segSweepResults = [...agg.values()];
+    clearCandidates();
+    bump();
+  }
+
+  const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  if (ui.segSweepCancel) {
+    showToast(`已取消：处理 ${processed}/${targets.length} 张，自动接受 ${acceptedTotal} 个区域（${secs}s）`, 'info');
+  } else {
+    showToast(
+      `批量扫描完成（${secs}s）：${processed} 张图、自动接受 ${acceptedTotal} 个区域` +
+      (reviewTotal > 0 ? `，${reviewTotal} 个待复核（逐张点「复核」）` : '') +
+      (failed > 0 ? `，${failed} 张失败` : ''),
+      failed > 0 ? 'error' : 'success',
+    );
+  }
+}
+
+function loadImageEl(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('图片解码失败'));
+    img.src = dataUrl;
+  });
 }
 
 /** 复核某个词：重新取一次它的候选，挂到现有的候选区（一次只挂一个词） */

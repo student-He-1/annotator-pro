@@ -13,9 +13,11 @@
     canUndoMask, canRedoMask, undoMask, redoMask, getMaskDirty, getImageMask,
     runClassSweep, cancelClassSweep, toggleSweepClass, selectAllSweepClasses, clearSweepClasses,
     reviewSweepClass, cleanupSmallIslands, getRefinePoints, clearRefinePoints,
+    runBatchSweep, setHoverCandidate,
   } from '$lib/segmentation/store.svelte';
   import { SEG_PRESETS } from '$lib/segmentation/presets';
   import { describeMasks, getUnmappedCityscapesClasses, SEG_EXPORT_FORMATS } from '$lib/export/segmentation-export';
+  import { getSegEmbedRequestCount, getSegEmbedCacheSize } from '$lib/segmentation/samMask';
 
   const colorOf = colorOfSegClass;
 
@@ -37,12 +39,28 @@
   /** Cityscapes 语义图导出前要提醒的「映射不到」类别（它们会被写成 void=255） */
   const unmapped = $derived((ui.maskRev, curName ? getUnmappedCityscapesClasses(getImageMask(curName)) : []));
   const refineCount = $derived((ui.maskRev, getRefinePoints().length));
+  /** 编码次数/缓存张数：纯函数读不出响应式，必须挂在 ui.maskRev 上（每次候选/掩膜变化都会 bump） */
+  const embedInfo = $derived((ui.maskRev, {
+    requests: getSegEmbedRequestCount(),
+    cache: getSegEmbedCacheSize(),
+  }));
 
   async function startSweep() {    if (busy) return;
     busy = true;
     try {
       // 传 render 进去：扫描是逐词合并的，每合并完一个词就重画一次，边扫边能看到掩膜
       await runClassSweep(() => render());
+      render();
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function startBatchSweep() {
+    if (busy) return;
+    busy = true;
+    try {
+      await runBatchSweep(() => render());
       render();
     } finally {
       busy = false;
@@ -171,6 +189,7 @@
         <button class="btn-mini" onclick={connectBackend} disabled={busy}>{busy ? '…' : '连接'}</button>
       </div>
       <p class="muted tiny">掩膜改动和标注一样自动保存（Ctrl+S 同款），工程文件用「保存工程」落盘。</p>
+      <p class="muted tiny">编码 {embedInfo.requests} 次 · 缓存 {embedInfo.cache} 张（切回前几张图不会再重编码）</p>
     </div>
 
     <!-- 文本提示：主力工作流 -->
@@ -215,14 +234,25 @@
       </div>
       {#if ui.segSweepRunning}
         <div class="row-line">
-          <span class="tiny">扫描中 {ui.segSweepDone}/{ui.segSweepTotal} · {ui.segSweepCurrent || '…'}</span>
+          {#if ui.segBatchRunning}
+            <span class="tiny">批量 {ui.segBatchDone}/{ui.segBatchTotal} 张 · {ui.segBatchCurrent || '…'}</span>
+          {:else}
+            <span class="tiny">扫描中 {ui.segSweepDone}/{ui.segSweepTotal} · {ui.segSweepCurrent || '…'}</span>
+          {/if}
           <button class="btn-mini danger" onclick={() => cancelClassSweep()}>取消</button>
         </div>
-        <div class="bar"><div class="bar-fill" style="width:{ui.segSweepTotal ? Math.round(ui.segSweepDone / ui.segSweepTotal * 100) : 0}%"></div></div>
+        <div class="bar">
+          <div class="bar-fill" style="width:{ui.segBatchRunning
+            ? (ui.segBatchTotal ? Math.round(ui.segBatchDone / ui.segBatchTotal * 100) : 0)
+            : (ui.segSweepTotal ? Math.round(ui.segSweepDone / ui.segSweepTotal * 100) : 0)}%"></div>
+        </div>
       {:else}
         <div class="row-line">
           <button class="btn-mini primary" onclick={startSweep}
             disabled={ui.segSweepClasses.length === 0 || busy}>开始扫描（{ui.segSweepClasses.length} 类）</button>
+          <button class="btn-mini" onclick={startBatchSweep}
+            disabled={ui.segSweepClasses.length === 0 || busy || !images.length}
+            title="对每张已导入的图各跑一遍；每张图各自一个撤销点">批量扫描全部图片</button>
         </div>
       {/if}
       {#if ui.segSweepResults.length > 0}
@@ -258,7 +288,9 @@
         </div>
         <div class="list">
           {#each cands as c (c.k)}
-            <div class="item cand">
+            <div class="item cand" title="鼠标停在行上会在画布上提亮这个候选"
+              onmouseenter={() => { setHoverCandidate(c.k); render(); }}
+              onmouseleave={() => { setHoverCandidate(0); render(); }}>
               <span class="idx">#{c.k}</span>
               <span class="cls">{c.className}</span>
               <span class="kind" class:stuff={c.kind === 'stuff'}>{c.kind === 'stuff' ? '整片' : '实例'}</span>

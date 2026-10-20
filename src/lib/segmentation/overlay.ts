@@ -20,6 +20,8 @@ export interface OverlayInput {
   /** 已被用户丢弃的候选（值不再画） */
   hiddenCandidates: Set<number>;
   selected: number;
+  /** 候选 hover 预览：这个候选画得更亮 */
+  hoverCandidate?: number;
   mode: 'instance' | 'class';
   opacity: number;
   showOverlay: boolean;
@@ -91,9 +93,10 @@ export function buildOverlayCanvas(input: OverlayInput): HTMLCanvasElement | nul
     for (const cand of candidates) {
       if (hiddenCandidates.has(cand.k)) continue;
       const k = cand.k & 255;
-      // 候选统一用暖色，和「已接受的正式区域」在视觉上分开
+      // 候选统一用暖色，和「已接受的正式区域」在视觉上分开；hover 的那一个提亮
       const [r, g, b] = cand.k % 2 === 0 ? [251, 191, 36] : [56, 189, 248];
-      candLut[k] = rgba(r, g, b, 110);
+      const alpha = cand.k === input.hoverCandidate ? 210 : 110;
+      candLut[k] = rgba(r, g, b, alpha);
     }
     for (let i = 0; i < candMap.length; i++) {
       const v = candMap[i];

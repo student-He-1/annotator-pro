@@ -123,6 +123,13 @@ export const ui = $state({
   segSweepTotal: 0,
   segSweepCurrent: '',
   segSweepResults: [] as SegSweepResult[],
+  /** 整目录批量扫描（P2）的图片级进度 */
+  segBatchRunning: false,
+  segBatchDone: 0,
+  segBatchTotal: 0,
+  segBatchCurrent: '',
+  /** 候选 hover 预览：鼠标停在候选行上时，画布上把那一个候选提亮 */
+  segHoverCandidate: 0,
   // ---- 修正工具（P1c-2）----
   /** 画笔/橡皮的笔刷直径（图像像素，不是屏幕像素） */
   segBrushSize: 24,

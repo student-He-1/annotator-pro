@@ -30,13 +30,27 @@ export interface SegMaskResponse {
 let baseUrl = DEFAULT_BASE;
 let serverReady = false;
 let maskSupported = false;
-/** 同一张图只 embed 一次：SAM3 一次编码可以反复换提示词（几十毫秒一个词） */
-let embeddedKey = '';
-let embeddedId = '';
+/** embed 结果的**多图 LRU**（方案 P2：以前只有一个槽，切图必重编码 1~2 s）。
+ *  imageKey → image_id。留 4 张：后端 `state_cache` 默认留 5 张，前端少留一张，
+ *  正常情况下回到前几张图就是 0 成本；万一后端把它挤掉了，请求会 404 → 自动重新 embed 一次。 */
+const EMBED_LRU_MAX = 4;
+const embedCache = new Map<string, string>();   // Map 的插入顺序就是 LRU 顺序
+/** 本次会话真正发过多少次 /embed（面板显示 + E2E 断言「切回来不再重编码」用） */
+let embedRequests = 0;
 
 export function getSegBaseUrl(): string { return baseUrl; }
 export function isSegServerReady(): boolean { return serverReady; }
 export function isSegMaskSupported(): boolean { return maskSupported; }
+
+/** 当前缓存了几张图的编码（UI 显示用） */
+export function getSegEmbedCacheSize(): number {
+  return embedCache.size;
+}
+
+/** 本次会话累计 /embed 次数 */
+export function getSegEmbedRequestCount(): number {
+  return embedRequests;
+}
 
 function isTauri(): boolean {
   return typeof window !== 'undefined' && (!!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__);
@@ -81,10 +95,9 @@ export async function connectSegBackend(startSidecar = true): Promise<{ ready: b
   }
 }
 
-/** 切图时调用：丢掉 embed 缓存（后端 state 是另一回事，这里只是让下次重新 embed） */
+/** 清空 embed 缓存（一般只在明确切后端/断线时用；切图**不要**清，多图 LRU 就是为了切图不重编码） */
 export function clearSegSamCache() {
-  embeddedKey = '';
-  embeddedId = '';
+  embedCache.clear();
 }
 
 function imageKey(img: HTMLImageElement): string {
@@ -139,9 +152,8 @@ async function decodePngToMap(b64: string, wantW: number, wantH: number, binary:
   return map;
 }
 
-async function ensureEmbedded(img: HTMLImageElement): Promise<string> {
-  const key = imageKey(img);
-  if (embeddedId && embeddedKey === key) return embeddedId;
+async function embedRequest(img: HTMLImageElement): Promise<string> {
+  embedRequests++;
   const b64 = imageToPngBase64(img);
   const resp = await fetch(`${baseUrl}/embed`, {
     method: 'POST',
@@ -154,9 +166,51 @@ async function ensureEmbedded(img: HTMLImageElement): Promise<string> {
   }
   const data = await resp.json();
   if (!data?.image_id) throw new Error('后端没有返回 image_id');
-  embeddedId = data.image_id as string;
-  embeddedKey = key;
-  return embeddedId;
+  return data.image_id as string;
+}
+
+async function ensureEmbedded(img: HTMLImageElement): Promise<string> {
+  const key = imageKey(img);
+  const hit = embedCache.get(key);
+  if (hit) {
+    // 命中后移到队尾（Map 的插入顺序当 LRU）
+    embedCache.delete(key);
+    embedCache.set(key, hit);
+    return hit;
+  }
+  const id = await embedRequest(img);
+  embedCache.set(key, id);
+  while (embedCache.size > EMBED_LRU_MAX) {
+    const oldest = embedCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    embedCache.delete(oldest);
+  }
+  return id;
+}
+
+/** 带 embed 的 POST。
+ *  后端的 `state_cache` 默认只留 5 张，前端 LRU 留 4 张，正常情况下不会落空；
+ *  但万一后端把它挤掉了（比如别的地方也调了 /embed），请求会 404 —— 这时丢掉缓存重新 embed 再试一次，
+ *  用户看到的是「稍微慢一下」，而不是「点完没反应」。 */
+async function postWithEmbed(
+  img: HTMLImageElement,
+  path: string,
+  extra: Record<string, unknown>
+): Promise<Response> {
+  const key = imageKey(img);
+  let imageId = await ensureEmbedded(img);
+  const send = (id: string) => fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...extra, image_id: id }),
+  });
+  let resp = await send(imageId);
+  if (resp.status === 404) {
+    embedCache.delete(key);
+    imageId = await ensureEmbedded(img);
+    resp = await send(imageId);
+  }
+  return resp;
 }
 
 function normalizeInstances(list: any[]): SegInstance[] {
@@ -179,16 +233,10 @@ export async function pcsWithMask(
   confidenceThreshold = 0.3
 ): Promise<SegMaskResponse> {
   if (!serverReady) throw new Error('SAM 后端未连接：先点「连接后端」');
-  const imageId = await ensureEmbedded(img);
-  const resp = await fetch(`${baseUrl}/pcs`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      image_id: imageId,
-      text,
-      confidence_threshold: confidenceThreshold,
-      return_mask: true,
-    }),
+  const resp = await postWithEmbed(img, '/pcs', {
+    text,
+    confidence_threshold: confidenceThreshold,
+    return_mask: true,
   });
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
@@ -227,17 +275,11 @@ export async function predictWithPoints(
 ): Promise<{ map: Uint8Array | null; score: number; polygon: { x: number; y: number }[] }> {
   if (!serverReady) throw new Error('SAM 后端未连接：先点「连接后端」');
   if (points.length === 0) return { map: null, score: 0, polygon: [] };
-  const imageId = await ensureEmbedded(img);
-  const resp = await fetch(`${baseUrl}/predict`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      image_id: imageId,
-      points: points.map(p => [p.x, p.y]),
-      labels: points.map(p => p.label),
-      multimask: true,
-      return_mask: true,
-    }),
+  const resp = await postWithEmbed(img, '/predict', {
+    points: points.map(p => [p.x, p.y]),
+    labels: points.map(p => p.label),
+    multimask: true,
+    return_mask: true,
   });
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
