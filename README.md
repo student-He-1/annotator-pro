@@ -190,6 +190,28 @@ src-tauri/
 
 ---
 
+## 模型与开源组件声明
+
+本项目是第三方模型与开源组件的集成应用，相关版权归各自作者/组织所有：
+
+| 组件 / 模型 | 来源 | 许可证与说明 |
+|---|---|---|
+| **SAM 3**（Segment Anything Model 3） | Meta AI Research · [facebookresearch/sam3](https://github.com/facebookresearch/sam3) | **SAM License**（自定义许可，非 MIT/Apache）；允许研究与商业使用，但有军事/ITAR 等限制；分发 SAM Materials 需附许可证副本 |
+| **Ultralytics YOLO**（检测 / Pose） | Ultralytics · [ultralytics.com](https://www.ultralytics.com/) | **AGPL-3.0**（默认覆盖代码与训练模型）；商用/闭源分发需遵守 AGPL-3.0 或购买 Enterprise 许可 |
+| **face_alignment**（68 点人脸） | Adrian Bulat · [1adrianb/face-alignment](https://github.com/1adrianb/face-alignment) | BSD 许可证 |
+| **ONNX Runtime** | Microsoft · [microsoft/onnxruntime](https://github.com/microsoft/onnxruntime) | MIT |
+| **PyTorch** | PyTorch Foundation | BSD-3-Clause |
+| **FastAPI** | Sebastián Ramírez · [fastapi.tiangolo.com](https://fastapi.tiangolo.com/) | MIT |
+| **Tauri** | Tauri Contributors | MIT / Apache-2.0 |
+| **Svelte** | Svelte Contributors | MIT |
+
+> **模型权重不在本仓库内**（`*.pt` / `*.onnx` 不入库），需自行从上游获取。
+> 使用、修改或再分发模型/代码时，请遵守对应上游许可证；本仓库仅提供集成代码，不对第三方组件的授权做任何变更。
+> SAM 3 使用前请阅读完整的 [SAM License](https://github.com/facebookresearch/sam3/blob/main/LICENSE)；
+> Ultralytics YOLO 商用/闭源分发请先确认 [Ultralytics 许可](https://www.ultralytics.com/license)。
+
+---
+
 ## 更新日志
 
 ### v2.1.0 · 2026-10-21
@@ -204,6 +226,7 @@ src-tauri/
 - **修复**：分割模式新增类别重启后丢失；YOLO 分割 TXT 导出卡死/白屏、复杂轮廓爆栈；崩溃前掩膜未落盘导致的回退（新增最长 3 秒自动保存 + 导出前强制落盘）
 - **体验**：可访问性告警清零（`svelte-check` 0 errors / 0 warnings）
 - **启动与关于**：新增科技感启动动画（可点击跳过）；设置里新增「关于」，含软件介绍、技术栈与作者信息
+- **开源声明**：README 与设置「关于」补充 SAM 3 / Ultralytics YOLO / face_alignment 等模型与开源组件的出处及许可证说明
 
 ### v2.0.0 · 首个公开版本
 

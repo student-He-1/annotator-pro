@@ -198,6 +198,12 @@
           标注完成后请及时「保存工程」并自行备份。
           因使用本软件造成的数据丢失或其它损失，作者不承担赔偿责任。
         </p>
+        <p class="about-credits">
+          <strong>模型与开源组件</strong><br />
+          SAM 3（Meta，SAM License）、Ultralytics YOLO（AGPL-3.0）、face_alignment（BSD）、
+          ONNX Runtime（MIT）、Tauri / Svelte 等。版权归各自作者，使用请遵守上游许可证；
+          模型权重不在软件内，需自行获取。详见 README「模型与开源组件声明」。
+        </p>
       </div>
     </div>
 
@@ -298,4 +304,10 @@
     font-size: 10.5px; line-height: 1.7; color: #d2991d;
   }
   .about-disclaimer strong { color: #e3b341; }
+  .about-credits {
+    margin: 8px 0 0; padding: 10px 12px; border-radius: 6px;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    font-size: 10.5px; line-height: 1.7; color: var(--text-muted);
+  }
+  .about-credits strong { color: var(--text-secondary); }
 </style>
