@@ -1,6 +1,6 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t } from '$lib/i18n.svelte';
-  import { splitDataset, exportSplitFiles } from '$lib/dataset';
+  import { splitDataset, exportSplitFiles, annotationUnitLabel } from '$lib/dataset';
   import { showToast } from '$lib/state.svelte';
   import type { SplitResult } from '$lib/dataset';
 
@@ -20,6 +20,8 @@
 
   const totalRatio = $derived(trainRatio + valRatio + testRatio);
   const ratioValid = $derived(Math.abs(totalRatio - 1) < 0.01);
+  // 检测叫「标注」，分类叫「标签」，分割叫「区域」
+  const unitLabel = $derived(annotationUnitLabel());
 
   function handleSplit() {
     if (!ratioValid) {
@@ -60,7 +62,7 @@
   }
 </script>
 
-<div class="modal-backdrop" onclick={handleBackdropClick}>
+<div class="modal-backdrop" role="presentation" onclick={handleBackdropClick}>
   <div class="modal">
     <div class="modal-header">
       <h3>数据集划分</h3>
@@ -71,18 +73,18 @@
       <div class="section">
         <h4>划分比例</h4>
         <div class="ratio-row">
-          <label>训练集</label>
-          <input type="number" bind:value={trainRatio} min="0" max="1" step="0.05" />
+          <label for="ds-train">训练集</label>
+          <input id="ds-train" type="number" bind:value={trainRatio} min="0" max="1" step="0.05" />
           <span class="pct">{(trainRatio * 100).toFixed(0)}%</span>
         </div>
         <div class="ratio-row">
-          <label>验证集</label>
-          <input type="number" bind:value={valRatio} min="0" max="1" step="0.05" />
+          <label for="ds-val">验证集</label>
+          <input id="ds-val" type="number" bind:value={valRatio} min="0" max="1" step="0.05" />
           <span class="pct">{(valRatio * 100).toFixed(0)}%</span>
         </div>
         <div class="ratio-row">
-          <label>测试集</label>
-          <input type="number" bind:value={testRatio} min="0" max="1" step="0.05" />
+          <label for="ds-test">测试集</label>
+          <input id="ds-test" type="number" bind:value={testRatio} min="0" max="1" step="0.05" />
           <span class="pct">{(testRatio * 100).toFixed(0)}%</span>
         </div>
         <div class="ratio-total" class:invalid={!ratioValid}>
@@ -93,7 +95,7 @@
       <div class="section">
         <label class="checkbox">
           <input type="checkbox" bind:checked={onlyAnnotated} />
-          仅划分已标注图片
+          仅划分有{unitLabel}的图片
         </label>
         <label class="checkbox">
           <input type="checkbox" bind:checked={useSeed} />
@@ -101,8 +103,8 @@
         </label>
         {#if useSeed}
           <div class="seed-row">
-            <label>种子值</label>
-            <input type="number" bind:value={seed} />
+            <label for="ds-seed">种子值</label>
+            <input id="ds-seed" type="number" bind:value={seed} />
           </div>
         {/if}
       </div>
@@ -118,21 +120,21 @@
             <div class="result-card train">
               <div class="result-label">训练集</div>
               <div class="result-count">{result.stats.train} 张</div>
-              <div class="result-anns">{result.stats.trainAnns} 标注</div>
+              <div class="result-anns">{result.stats.trainAnns} {unitLabel}</div>
             </div>
             <div class="result-card val">
               <div class="result-label">验证集</div>
               <div class="result-count">{result.stats.val} 张</div>
-              <div class="result-anns">{result.stats.valAnns} 标注</div>
+              <div class="result-anns">{result.stats.valAnns} {unitLabel}</div>
             </div>
             <div class="result-card test">
               <div class="result-label">测试集</div>
               <div class="result-count">{result.stats.test} 张</div>
-              <div class="result-anns">{result.stats.testAnns} 标注</div>
+              <div class="result-anns">{result.stats.testAnns} {unitLabel}</div>
             </div>
           </div>
           <div class="result-total">
-            合计: {result.stats.total} 张图片 / {result.stats.trainAnns + result.stats.valAnns + result.stats.testAnns} 标注
+            合计: {result.stats.total} 张图片 / {result.stats.trainAnns + result.stats.valAnns + result.stats.testAnns} {unitLabel}
           </div>
           <button class="btn primary" onclick={handleExport}>
             导出划分文件 (.txt)

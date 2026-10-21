@@ -205,7 +205,7 @@
   }
 </script>
 
-<div class="modal-backdrop" onclick={handleBackdropClick}>
+<div class="modal-backdrop" role="presentation" onclick={handleBackdropClick}>
   <div class="modal">
     <div class="modal-header">
       <h3>AI 预标注 (YOLO)</h3>
@@ -250,18 +250,18 @@
       <div class="section">
         <h4>2. 参数配置</h4>
         <div class="param-row">
-          <label>置信度阈值</label>
-          <input type="number" bind:value={confThreshold} min="0" max="1" step="0.05" />
+          <label for="yolo-conf">置信度阈值</label>
+          <input id="yolo-conf" type="number" bind:value={confThreshold} min="0" max="1" step="0.05" />
           <span class="param-hint">越高越严格</span>
         </div>
         <div class="param-row">
-          <label>NMS IoU 阈值</label>
-          <input type="number" bind:value={iouThreshold} min="0" max="1" step="0.05" />
+          <label for="yolo-iou">NMS IoU 阈值</label>
+          <input id="yolo-iou" type="number" bind:value={iouThreshold} min="0" max="1" step="0.05" />
           <span class="param-hint">去重重叠框</span>
         </div>
         <div class="param-row">
-          <label>输入尺寸</label>
-          <input type="number" bind:value={inputSize} min="320" max="1280" step="32" />
+          <label for="yolo-size">输入尺寸</label>
+          <input id="yolo-size" type="number" bind:value={inputSize} min="320" max="1280" step="32" />
           <span class="param-hint">通常 640</span>
         </div>
       </div>

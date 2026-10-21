@@ -10,15 +10,37 @@ import { images, annotations, classes, ui } from '../state.svelte';
 //  · COCO     ：category_id 是规范必需字段，而且该 category 必须自带 keypoints/skeleton，
 //               否则训练脚本读不出关键点。所以用 keypointExportName() 生成独立的骨架类别。
 //  · LabelMe  ：每个 shape 必须有 label，同样用骨架名，不能空着。
-//  · VOC/YOLO ：这两个格式**没有**关键点概念，关键点会被丢掉 —— 导出前要明确告诉用户。
-//  · CreateML ：同上，只支持矩形框。
+//  · VOC     ：没有关键点概念，会被丢掉 —— 导出前要明确告诉用户。
+//  · YOLO    ：用 ultralytics 的 **pose 行**保留关键点：
+//              `class cx cy w h kx1 ky1 v1 ...`（全部归一化，bbox = 关键点 min/max 外扩 5%）。
+//              骨架类别的导出名（person/face/hand）会补进 classes.txt，索引和标注行保持一致。
+//              注意 YOLO-pose 一个数据集只支持一种 kpt_shape，混用 17/68 点需要分开导出。
+//  · CreateML ：只支持矩形框，关键点会被丢掉。
 //  · PNG/JPG  ：可视化图，只画骨架和点，不画类别角标。
 //
 //  这个格式矩阵由 formatDropsKeypoints() / formatLabel() 对外提供，供导出前提示用。
 
-/** 该格式会不会丢掉关键点（确认没有关键点概念的那几个） */
+/** 该格式会不会丢掉关键点（确认没有关键点概念的那几个）。YOLO 走 pose 行，不再丢。 */
 export function formatDropsKeypoints(format: ExportFormat): boolean {
-  return format === 'voc' || format === 'yolo' || format === 'createml';
+  return format === 'voc' || format === 'createml';
+}
+
+/** YOLO 的类别表：检测类别 + 关键点骨架导出名（同名复用，避免索引错位）。
+ *  classes.txt 与每张图的 txt 必须用**同一个**顺序，否则类别会整体对不上。 */
+export function getYoloClassNames(): string[] {
+  const names = [...classes];
+  const seen = new Set(names);
+  // 只扫当前图片列表：旧文件夹留下的关键点标注不能把它的骨架名带进 classes.txt
+  const current = new Set(images.map(i => i.name));
+  for (const [name, list] of Object.entries(annotations)) {
+    if (!current.has(name)) continue;
+    for (const ann of list) {
+      if (ann.type !== 'keypoint') continue;
+      const exportName = keypointExportName(ann.points.length, ann.skeletonId);
+      if (!seen.has(exportName)) { seen.add(exportName); names.push(exportName); }
+    }
+  }
+  return names;
 }
 
 /** 导出格式的中文名，用于提示文案 */
@@ -96,9 +118,53 @@ function exportVOC(imgData: ImageInfo, anns: Annotation[], baseName: string) {
 }
 
 function exportYOLO(imgData: ImageInfo, anns: Annotation[], baseName: string) {
+  const W = imgData.width, H = imgData.height;
+  // 与 classes.txt 用同一份类别表（检测类别 + 骨架导出名）
+  const classNames = getYoloClassNames();
+  const clamp = (v: number, max: number) => Math.min(Math.max(v, 0), max);
+
   let txt = '';
   anns.forEach(ann => {
-    const classIdx = classes.indexOf(ann.className);
+    if (ann.type === 'keypoint') {
+      // ultralytics pose 行：class cx cy w h kx1 ky1 v1 ...（全部归一化）
+      const classIdx = classNames.indexOf(keypointExportName(ann.points.length, ann.skeletonId));
+      if (classIdx < 0 || ann.points.length === 0 || W <= 0 || H <= 0) return;
+
+      // bbox 由关键点的 min/max 推导，再夹到图片范围内；
+      // 退化成一个点/一条线时补到 1px，避免归一化后 w/h 为 0。
+      let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+      for (const p of ann.points) {
+        x1 = Math.min(x1, p.x); x2 = Math.max(x2, p.x);
+        y1 = Math.min(y1, p.y); y2 = Math.max(y2, p.y);
+      }
+      x1 = clamp(x1, W); x2 = clamp(x2, W);
+      y1 = clamp(y1, H); y2 = clamp(y2, H);
+      if (x2 - x1 < 1) { const mid = (x1 + x2) / 2; x1 = clamp(mid - 0.5, W); x2 = Math.min(W, x1 + 1); }
+      if (y2 - y1 < 1) { const mid = (y1 + y2) / 2; y1 = clamp(mid - 0.5, H); y2 = Math.min(H, y1 + 1); }
+      // 关键点外接框会紧贴手/脚/头顶，YOLO 的 person 框需要包住整个人体，
+      // 外扩 5%（再夹回图片内），避免训练时身体边缘被裁掉。
+      const padX = (x2 - x1) * 0.05, padY = (y2 - y1) * 0.05;
+      x1 = clamp(x1 - padX, W); x2 = clamp(x2 + padX, W);
+      y1 = clamp(y1 - padY, H); y2 = clamp(y2 + padY, H);
+
+      // 模板点数决定这一行要写多少个关键点；没标的补 0 0 0（v=0 表示未标注）
+      const tpl = skeletonFor(ann.skeletonId, ann.points.length);
+      const kptCount = tpl?.keypoints.length || ann.points.length;
+      let kpts = '';
+      for (let i = 0; i < kptCount; i++) {
+        const p = ann.points[i];
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+          kpts += ` ${(clamp(p.x, W) / W).toFixed(6)} ${(clamp(p.y, H) / H).toFixed(6)} 2`;
+        } else {
+          kpts += ' 0.000000 0.000000 0';
+        }
+      }
+      txt += `${classIdx} ${(((x1 + x2) / 2) / W).toFixed(6)} ${(((y1 + y2) / 2) / H).toFixed(6)}`
+        + ` ${((x2 - x1) / W).toFixed(6)} ${((y2 - y1) / H).toFixed(6)}${kpts}\n`;
+      return;
+    }
+
+    const classIdx = classNames.indexOf(ann.className);
     if (classIdx < 0) return;
     if (ann.type === 'rect') {
       txt += `${classIdx} ${((ann.x + ann.w / 2) / imgData.width).toFixed(6)} ${((ann.y + ann.h / 2) / imgData.height).toFixed(6)} ${(ann.w / imgData.width).toFixed(6)} ${(ann.h / imgData.height).toFixed(6)}\n`;

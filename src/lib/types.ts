@@ -1,5 +1,6 @@
 /** 分割模式的工程数据类型（只在分割模式用；旧工程不带这些字段） */
 import type { ProjectMask, SegmentationSettings } from './segmentation/types';
+import type { SkeletonTemplate } from './skeletons';
 
 /** 标注类型 */
 export type AnnotationType = 'rect' | 'polygon' | 'rotated' | 'keypoint';
@@ -9,7 +10,9 @@ export type ToolType = 'select' | AnnotationType | 'magicwand' | 'sam'
   /** 分割模式工具（第三个模式）。前缀 seg_ 保证和上面检测模式的工具名不冲突 */
   | 'seg_select' | 'seg_text' | 'seg_point' | 'seg_box'
   /** 修正工具 */
-  | 'seg_brush' | 'seg_eraser' | 'seg_refine';
+  | 'seg_brush' | 'seg_eraser' | 'seg_refine'
+  /** 区域拆分：画一条线把选中区域切开 */
+  | 'seg_split';
 
 /** 点坐标 */
 export interface Point { x: number; y: number }
@@ -85,8 +88,8 @@ export interface ShortcutMap {
 
 /** 导出格式 */
 export type ExportFormat = 'voc' | 'yolo' | 'coco' | 'coco_merged' | 'createml' | 'labelme' | 'png' | 'jpg' | 'classification_csv' | 'unet_mask'
-  /** 分割模式的四种导出（走 lib/export/segmentation-export.ts，不进 formats.ts 的旧 case） */
-  | 'seg_coco' | 'seg_coco_merged' | 'seg_cityscapes' | 'seg_instances' | 'seg_unet';
+  /** 分割模式的导出（走 lib/export/segmentation-export.ts，不进 formats.ts 的旧 case） */
+  | 'seg_coco' | 'seg_coco_merged' | 'seg_cityscapes' | 'seg_instances' | 'seg_unet' | 'seg_yolo';
 
 /** 语言 */
 export type Language = 'zh' | 'en';
@@ -144,5 +147,9 @@ export interface ProjectFile {
     workMode?: 'detection' | 'classification' | 'segmentation';
     /** 分割模式的显示/类别设置（可缺省） */
     segmentation?: SegmentationSettings;
+    /** 工程里实际引用到的自定义骨架模板定义（可缺省）。
+     *  只写 annotations 里出现过的 skeletonId，且不含内置模板；
+     *  换机器打开工程时会把本机缺失的补进来，避免退化成「按点数猜」。 */
+    skeletons?: SkeletonTemplate[];
   };
 }

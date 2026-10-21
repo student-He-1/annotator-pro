@@ -10,10 +10,11 @@ import { ui, images, imageModified, showToast, markModified, saveAnnotations, re
 import { normalizePrompt } from '../sam';
 import { DEFAULT_SEG_COLORS, SEG_PRESETS, SEG_ZH_TO_EN, STUFF_CLASSES, colorForNewSegClass, inferKind } from './presets';
 import {
-  encodeRuns, decodeRuns, removeOrdinalInPlace, parseRunString, runStringOf,
+  encodeRuns, decodeRuns, removeOrdinalInPlace, parseRunString, runStringOf, measureOverlapPixels,
+  mergeIndexRuns, unionIndexRuns, collectOverwritten,
 } from './rle';
 import { buildOverlayCanvas } from './overlay';
-import { pcsWithMask, predictWithPoints, clearSegSamCache, connectSegBackend, isSegMaskSupported, isSegServerReady } from './samMask';
+import { pcsWithMask, predictWithPoints, predictWithBox, clearSegSamCache, connectSegBackend, isSegMaskSupported, isSegBoxSupported, isSegServerReady } from './samMask';
 import type { ImageMask, MaskCandidate, MaskRegion, MaskRegionKind, ProjectMask, SegmentationSettings, SegSweepResult } from './types';
 
 const MAX_MASK_HISTORY = 30;
@@ -196,6 +197,8 @@ export function ensureSegClass(className: string): string {
       ...ui.segClassColors,
       [name]: DEFAULT_SEG_COLORS[name] || colorForNewSegClass(ui.segClasses.length),
     };
+    // 类别表要落进本地缓存，否则重启 exe 后新增类别会消失（检测/分类的 classes 一直是这么做的）
+    saveAnnotations();
   }
   return name;
 }
@@ -352,56 +355,111 @@ export async function runTextPrompt(text: string): Promise<void> {
   }
 }
 
-/** 点提示 → 一个候选 */
+/** 点/框提示共用的收尾：把返回的单实例掩膜变成候选列表里的 `k=1`。 */
+function applySingleCandidate(
+  res: { map: Uint8Array | null; score: number },
+  img: HTMLImageElement,
+  label: string,
+): void {
+  if (!res.map) {
+    showToast(`后端没有返回掩膜（旧后端），${label}暂时不可用`, 'error');
+    return;
+  }
+  const total = img.naturalWidth * img.naturalHeight;
+  let area = 0;
+  let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
+  const W = img.naturalWidth;
+  for (let i = 0; i < res.map.length; i++) {
+    if (!res.map[i]) continue;
+    area++;
+    const y = (i / W) | 0;
+    const x = i - y * W;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const className = ensureSegClass(ui.segActiveClass || classFallback());
+  const cand: MaskCandidate = {
+    k: 1,
+    className,
+    kind: inferKind(className, area / total),
+    score: res.score,
+    area,
+    box: area > 0 ? { x1: minX, y1: minY, x2: maxX + 1, y2: maxY + 1 } : undefined,
+  };
+  candidates = [cand];
+  candMap = res.map;
+  candW = img.naturalWidth;
+  candH = img.naturalHeight;
+  hiddenCandidates.clear();
+  bump();
+  showToast(`${label}：${className}，${area} px（score ${res.score.toFixed(3)}）`, area > 0 ? 'success' : 'error');
+}
+
+/** 后端没连上时先连一次；失败给出提示并返回 false */
+async function ensureSegReady(): Promise<boolean> {
+  if (isSegServerReady() && isSegMaskSupported()) return true;
+  const st = await connectSegBackend(true);
+  ui.segBackendReady = st.ready;
+  ui.segMaskSupported = st.maskSupported;
+  if (!st.ready) { showToast(st.error || '后端未就绪', 'error'); return false; }
+  return true;
+}
+
 export async function runPointPrompt(x: number, y: number, label: 0 | 1 = 1): Promise<void> {
   const img = ui.currentImage;
   const name = currentName();
   if (!name || !img) { showToast('请先选择一张图片', 'error'); return; }
   ui.segPromptRunning = true;
   try {
-    if (!isSegServerReady() || !isSegMaskSupported()) {
-      const st = await connectSegBackend(true);
-      ui.segBackendReady = st.ready;
-      ui.segMaskSupported = st.maskSupported;
-      if (!st.ready) { showToast(st.error || '后端未就绪', 'error'); return; }
-    }
+    if (!(await ensureSegReady())) return;
     const res = await predictWithPoints(img, [{ x: Math.round(x), y: Math.round(y), label }]);
-    if (!res.map) {
-      showToast('后端没有返回掩膜（旧后端），点提示暂时不可用', 'error');
-      return;
-    }
-    const total = img.naturalWidth * img.naturalHeight;
-    let area = 0;
-    let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
-    const W = img.naturalWidth;
-    for (let i = 0; i < res.map.length; i++) {
-      if (!res.map[i]) continue;
-      area++;
-      const y = (i / W) | 0;
-      const x = i - y * W;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-    const className = ensureSegClass(ui.segActiveClass || classFallback());
-    const cand: MaskCandidate = {
-      k: 1,
-      className,
-      kind: inferKind(className, area / total),
-      score: res.score,
-      area,
-      box: area > 0 ? { x1: minX, y1: minY, x2: maxX + 1, y2: maxY + 1 } : undefined,
-    };
-    candidates = [cand];
-    candMap = res.map;
-    candW = img.naturalWidth;
-    candH = img.naturalHeight;
-    hiddenCandidates.clear();
-    bump();
-    showToast(`点分割：${className}，${area} px（score ${res.score.toFixed(3)}）`, area > 0 ? 'success' : 'error');
+    applySingleCandidate(res, img, '点分割');
   } catch (e: any) {
     showToast('点分割失败：' + (e?.message || e), 'error');
+  } finally {
+    ui.segPromptRunning = false;
+  }
+}
+
+/** 把任意方向/越界的框规范成 `x1<x2, y1<y2` 且夹在图片内（纯函数，框提示与测试共用） */
+export function normalizeBox(
+  x1: number, y1: number, x2: number, y2: number,
+  width: number, height: number,
+): { x1: number; y1: number; x2: number; y2: number } {
+  return {
+    x1: Math.max(0, Math.min(x1, x2)),
+    y1: Math.max(0, Math.min(y1, y2)),
+    x2: Math.min(width, Math.max(x1, x2)),
+    y2: Math.min(height, Math.max(y1, y2)),
+  };
+}
+
+/** 框提示：在目标外面拉一个框 → SAM 只在这个范围内抠掩膜。
+ *  适合目标边界模糊、或一簇同类物体文字提示会连成一片的情况。 */
+export async function runBoxPrompt(
+  x1: number, y1: number, x2: number, y2: number,
+): Promise<void> {
+  const img = ui.currentImage;
+  const name = currentName();
+  if (!name || !img) { showToast('请先选择一张图片', 'error'); return; }
+  const box = normalizeBox(x1, y1, x2, y2, img.naturalWidth, img.naturalHeight);
+  if (box.x2 - box.x1 < 3 || box.y2 - box.y1 < 3) {
+    showToast('框太小了，至少要 3×3 像素', 'info');
+    return;
+  }
+  ui.segPromptRunning = true;
+  try {
+    if (!(await ensureSegReady())) return;
+    if (!isSegBoxSupported()) {
+      showToast('当前后端不支持框提示（旧版 sam_server.py）—— 请重启最新后端再试', 'error');
+      return;
+    }
+    const res = await predictWithBox(img, box);
+    applySingleCandidate(res, img, '框分割');
+  } catch (e: any) {
+    showToast('框分割失败：' + (e?.message || e), 'error');
   } finally {
     ui.segPromptRunning = false;
   }
@@ -511,6 +569,10 @@ function applyCandidateItems(
 
   const map = getDecodedFor(name) || new Uint8Array(w * h);
   const kToOrdinal = new Uint16Array(256);
+  const existingCount = mask.regions.length;
+  // 严格重叠（默认关闭）：记录候选会盖掉的**已有区域**像素，事后挂到旧区域上。
+  // 关闭时这个 Map 始终为空，热路径只多一次布尔判断。
+  const strict = ui.segStrictOverlap;
   const newRegions: ImageMask['regions'] = [];
   for (const it of items) {
     const ordinal = mask.regions.length + newRegions.length + 1;
@@ -525,6 +587,11 @@ function applyCandidateItems(
       area: 0,
     });
   }
+
+  // 严格重叠：写入前先单独扫一遍，记下会被覆盖的已有区域像素（关闭时不做这次扫描）
+  const occludedHits = strict
+    ? collectOverwritten(candMap, map, k => kToOrdinal[k & 255], existingCount)
+    : new Map<number, number[]>();
 
   // 单遍：写像素 + 同时累计每个新 ordinal 的面积与包围盒（省掉「每区域再扫一遍整图」）
   const areas = new Uint32Array(256);
@@ -552,9 +619,43 @@ function applyCandidateItems(
     r.box = areas[o] > 0 ? { x1: minX[o], y1: minY[o], x2: maxX[o] + 1, y2: maxY[o] + 1 } : r.box;
   }
 
-  const regions = [...mask.regions, ...newRegions];
+  let regions = [...mask.regions, ...newRegions];
+  if (strict && occludedHits.size > 0) {
+    regions = regions.map(r => {
+      const idx = occludedHits.get(r.ordinal);
+      return idx ? { ...r, occluded: mergeIndexRuns(r.occluded, idx) } : r;
+    });
+  }
   storeMask(name, { width: w, height: h, counts: [], ids: [], regions }, map, { silent: opts.silent });
   return newRegions.length;
+}
+
+/** 重叠检测（只读）：这批候选如果被接受，会覆盖多少**已有区域**的像素。
+ *  ks 缺省 = 当前所有候选。用于接受前的提示，不改变任何状态。 */
+export function measureCandidateOverlap(name: string, ks?: number[]): { px: number; regions: number } {
+  const res = { px: 0, regions: 0 };
+  const mask = maskMap.get(name);
+  if (!name || !mask || !candMap) return res;
+  const map = getDecodedFor(name);
+  if (!map) return res;
+  // 只统计当前还在候选列表里的 k（candMap 里可能残留已丢弃/隐藏的候选）
+  const only = new Set<number>(ks && ks.length > 0 ? ks : candidates.map(c => c.k));
+  return measureOverlapPixels(candMap, map, only);
+}
+
+/** 小目标过滤：丢弃面积小于 minPx 的候选（不动已接受的区域） */
+export function filterSmallCandidates(minPx: number): number {
+  const min = Math.max(0, Math.round(minPx));
+  if (min <= 0) { showToast('请先填写面积阈值（px）', 'info'); return 0; }
+  const small = candidates.filter(c => c.area < min);
+  if (small.length === 0) {
+    showToast(`没有小于 ${min.toLocaleString()} px 的候选`, 'info');
+    return 0;
+  }
+  for (const c of small) discardCandidateSilent(c.k);
+  discardCandidateSilentCleanup();
+  showToast(`已过滤 ${small.length} 个小于 ${min.toLocaleString()} px 的候选`, 'success');
+  return small.length;
 }
 
 function discardCandidateSilent(k: number) {
@@ -595,6 +696,147 @@ export function deleteSelectedRegion() {
   const ord = ui.segSelectedRegion;
   if (!ord) return;
   deleteRegion(ord);
+}
+
+/** 小目标过滤：一次性删除当前图中面积小于 minPx 的区域（整批只记一个撤销点）。
+ *  面积从索引图现场统计，不依赖 region.area 是否过期。 */
+export function deleteSmallRegions(minPx: number): number {
+  const min = Math.max(0, Math.round(minPx));
+  const name = currentName();
+  const mask = maskMap.get(name);
+  const map = mask ? getDecodedFor(name) : null;
+  if (min <= 0) { showToast('请先填写面积阈值（px）', 'info'); return 0; }
+  if (!name || !mask || !map) { showToast('这张图还没有掩膜', 'info'); return 0; }
+
+  const st = statsOfAll(map, mask.width, mask.height);
+  const small = new Set(mask.regions.filter(r => (st.areas[r.ordinal & 255] || 0) < min).map(r => r.ordinal));
+  if (small.size === 0) {
+    showToast(`没有小于 ${min.toLocaleString()} px 的区域`, 'info');
+    return 0;
+  }
+  if (small.size === mask.regions.length) {
+    showToast(`所有区域都小于 ${min.toLocaleString()} px，已取消（避免整图删空）`, 'error');
+    return 0;
+  }
+
+  checkpoint(name);
+  for (let i = 0; i < map.length; i++) {
+    if (small.has(map[i])) map[i] = 0;
+  }
+  finalizeMaskEdit(name);   // 重新编号 + 更新面积/包围盒 + 落盘
+  if (small.has(ui.segSelectedRegion)) ui.segSelectedRegion = 0;
+  showToast(`已删除 ${small.size} 个小于 ${min.toLocaleString()} px 的区域（Ctrl+Z 可撤销）`, 'success');
+  return small.size;
+}
+
+// ---- 区域拆分（画一刀） ----
+/** 用一条线段把 `ordinal` 区域切成两块（或多块连通块）。
+ *
+ *  做法：先在索引图**副本**上把线擦掉并统计连通块，确认确实切开了才动真数据 ——
+ *  否则一条没切断的线会把区域划出一道缝，用户却以为拆分成功了。
+ *  最大的一块保留原 ordinal（选中状态不变），其余每块新建一个区域；整次拆分只记一个撤销点。 */
+export function splitRegionByLine(
+  ordinal: number,
+  x1: number, y1: number, x2: number, y2: number,
+  cutWidth = 3,
+): number {
+  const name = currentName();
+  const mask = maskMap.get(name);
+  const map = mask ? getDecodedFor(name) : null;
+  if (!name || !mask || !map || !ordinal) return 0;
+  if (!mask.regions.some(r => r.ordinal === ordinal)) return 0;
+  const w = mask.width, h = mask.height;
+
+  // 沿线段按 1px 步长擦除一个小方块（宽 3px），保证 4 邻接也不会「漏过去」
+  const rad = Math.max(1, Math.floor(cutWidth / 2));
+  const cut = (target: Uint8Array) => {
+    const steps = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1)));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const cx = Math.round(x1 + (x2 - x1) * t);
+      const cy = Math.round(y1 + (y2 - y1) * t);
+      for (let dy = -rad; dy <= rad; dy++) {
+        for (let dx = -rad; dx <= rad; dx++) {
+          const px = cx + dx, py = cy + dy;
+          if (px < 0 || py < 0 || px >= w || py >= h) continue;
+          const i = py * w + px;
+          if (target[i] === ordinal) target[i] = 0;
+        }
+      }
+    }
+  };
+
+  // 1) 副本上试切 + 数连通块（把 work 当 visited 用：处理过的像素置 0）
+  const work = map.slice();
+  cut(work);
+  const comps: { seed: number; size: number }[] = [];
+  const stack: number[] = [];
+  for (let i = 0; i < work.length; i++) {
+    if (work[i] !== ordinal) continue;
+    let size = 0;
+    work[i] = 0;
+    stack.push(i);
+    while (stack.length > 0) {
+      const p = stack.pop()!;
+      size++;
+      const y = (p / w) | 0;
+      const x = p - y * w;
+      if (x > 0) { const q = p - 1; if (work[q] === ordinal) { work[q] = 0; stack.push(q); } }
+      if (x < w - 1) { const q = p + 1; if (work[q] === ordinal) { work[q] = 0; stack.push(q); } }
+      if (y > 0) { const q = p - w; if (work[q] === ordinal) { work[q] = 0; stack.push(q); } }
+      if (y < h - 1) { const q = p + w; if (work[q] === ordinal) { work[q] = 0; stack.push(q); } }
+    }
+    comps.push({ seed: i, size });
+  }
+
+  if (comps.length < 2) {
+    showToast('这条线没有把区域切开：请从区域外一侧拉到另一侧', 'info');
+    return 0;
+  }
+  const totalAfter = mask.regions.length - 1 + comps.length;
+  if (totalAfter > 255) {
+    showToast(`拆分后会有 ${totalAfter} 个区域，超过单图 255 上限，已取消`, 'error');
+    return 0;
+  }
+
+  // 2) 确认成功才动真数据：一次撤销点 + 擦除刀口
+  checkpoint(name);
+  cut(map);
+
+  // 3) 最大块保留原 ordinal；其余块各自 flood 成新 ordinal
+  comps.sort((a, b) => b.size - a.size);
+  const region = mask.regions.find(r => r.ordinal === ordinal)!;
+  const newRegions: MaskRegion[] = [];
+  const paint = (seed: number, value: number) => {
+    const st = [seed];
+    map[seed] = value;
+    while (st.length > 0) {
+      const p = st.pop()!;
+      const y = (p / w) | 0;
+      const x = p - y * w;
+      if (x > 0) { const q = p - 1; if (map[q] === ordinal) { map[q] = value; st.push(q); } }
+      if (x < w - 1) { const q = p + 1; if (map[q] === ordinal) { map[q] = value; st.push(q); } }
+      if (y > 0) { const q = p - w; if (map[q] === ordinal) { map[q] = value; st.push(q); } }
+      if (y < h - 1) { const q = p + w; if (map[q] === ordinal) { map[q] = value; st.push(q); } }
+    }
+  };
+  // 新区域不继承 occluded：被遮挡像素属于原实例，硬拷过去会让两个实例抢同一批像素
+  const { occluded: _occ, ...regionBase } = region;
+  for (let ci = 1; ci < comps.length; ci++) {
+    const no = mask.regions.length + newRegions.length + 1;
+    newRegions.push({ ...regionBase, ordinal: no });
+    paint(comps[ci].seed, no);
+  }
+
+  // 4) 面积/包围盒按新索引图重算后落盘
+  const st = statsOfAll(map, w, h);
+  const regions = [...mask.regions, ...newRegions].map(r => {
+    const o = r.ordinal & 255;
+    return { ...r, area: st.areas[o], box: boxFromStats(st, r.ordinal) };
+  });
+  storeMask(name, { width: w, height: h, counts: [], ids: [], regions }, map);
+  showToast(`已把区域 ${ordinal} 拆成 ${comps.length} 块（Ctrl+Z 可撤销）`, 'success');
+  return comps.length;
 }
 
 export function setRegionClass(ordinal: number, className: string) {
@@ -1093,6 +1335,7 @@ export function serializeSegSettings(): SegmentationSettings {
     classes: [...ui.segClasses],
     classColors: { ...ui.segClassColors },
     cityscapesMap: { ...ui.segCityscapesMap },
+    strictOverlap: ui.segStrictOverlap,
   };
 }
 
@@ -1100,6 +1343,7 @@ export function loadSegSettings(s: SegmentationSettings | undefined) {
   if (!s) return;
   if (s.overlayMode === 'instance' || s.overlayMode === 'class') ui.segOverlayMode = s.overlayMode;
   if (typeof s.overlayOpacity === 'number') ui.segOverlayOpacity = s.overlayOpacity;
+  if (typeof s.strictOverlap === 'boolean') ui.segStrictOverlap = s.strictOverlap;
   if (Array.isArray(s.classes) && s.classes.length > 0) ui.segClasses = [...s.classes];
   if (s.classColors) ui.segClassColors = { ...ui.segClassColors, ...s.classColors };
   if (s.cityscapesMap) ui.segCityscapesMap = { ...s.cityscapesMap };
@@ -1132,9 +1376,12 @@ export function deleteImageMask(name: string) {
 /** 有掩膜的图片（批量导出用；getExportData 在 annotations 为空时返回 null，不能复用） */
 export function getImagesWithMasks(): { name: string; width: number; height: number }[] {
   ui.maskRev;
+  // 只算「当前图片列表」里的掩膜：换文件夹后旧掩膜仍留在缓存里（重新导入同一文件夹可恢复），
+  // 但不能混进当前文件夹的统计与批量导出。
+  const current = new Set(images.map(i => i.name));
   const out: { name: string; width: number; height: number }[] = [];
   for (const [name, mask] of maskMap) {
-    if (mask.regions.length > 0) out.push({ name, width: mask.width, height: mask.height });
+    if (mask.regions.length > 0 && current.has(name)) out.push({ name, width: mask.width, height: mask.height });
   }
   return out;
 }
@@ -1432,7 +1679,9 @@ export function mergeRegionInto(from: number, to: number) {
   const mask = maskMap.get(name);
   const map = getDecodedFor(name);
   if (!name || !mask || !map) return;
-  if (!mask.regions.some(r => r.ordinal === from) || !mask.regions.some(r => r.ordinal === to)) return;
+  const fromRegion = mask.regions.find(r => r.ordinal === from);
+  const toRegion = mask.regions.find(r => r.ordinal === to);
+  if (!fromRegion || !toRegion) return;
 
   checkpoint(name);
   for (let i = 0; i < map.length; i++) if (map[i] === from) map[i] = to;
@@ -1444,7 +1693,12 @@ export function mergeRegionInto(from: number, to: number) {
     if (v && v > from) map[i] = v - 1;
   }
   const newTo = to > from ? to - 1 : to;
-  storeMask(name, { width: mask.width, height: mask.height, counts: [], ids: [], regions }, map);
+  // 严格重叠：被遮挡像素也要跟着并过来，否则合并后实例会「丢形状」
+  const mergedOccluded = unionIndexRuns(toRegion.occluded, fromRegion.occluded);
+  const mergedRegions = mergedOccluded
+    ? regions.map(r => r.ordinal === newTo ? { ...r, occluded: mergedOccluded } : r)
+    : regions;
+  storeMask(name, { width: mask.width, height: mask.height, counts: [], ids: [], regions: mergedRegions }, map);
   ui.segSelectedRegion = newTo;
   finalizeMaskEdit(name);
   bump();

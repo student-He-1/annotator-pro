@@ -406,8 +406,9 @@
         <div class="class-list">
           {#each classes as c, i}
             {@const isSelected = (ui.imageLabels[images[ui.currentImageIndex]?.name] || []).includes(c)}
-            <div class="class-item" class:selected={isSelected}
-              onclick={() => toggleImageLabel(c)}>
+            <div class="class-item" class:selected={isSelected} role="button" tabindex="0"
+              onclick={() => toggleImageLabel(c)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleImageLabel(c); } }}>
               <span class="class-color" style="background:{getClassColor(c)}"></span>
               <span class="class-name">{c}</span>
               {#if isSelected}<span class="check">✓</span>{/if}
@@ -448,8 +449,8 @@
             <div class="pcs-hint">模型只认英文提示词，中文会自动转成英文（如「花朵」→ flower）</div>
           {/if}
           <div class="pcs-threshold-row">
-            <label>阈值</label>
-            <input type="number" step="0.05" min="0.05" max="0.95" bind:value={pcsThreshold} />
+            <label for="pp-pcs-th">阈值</label>
+            <input id="pp-pcs-th" type="number" step="0.05" min="0.05" max="0.95" bind:value={pcsThreshold} />
           </div>
           <button class="btn-sm btn-primary pcs-detect-btn" onclick={handlePcsDetect}
             disabled={pcsRunning || !pcsText.trim()}>
@@ -463,7 +464,7 @@
             </div>
             <div class="pcs-list">
               {#each pcsResults as inst, idx (idx)}
-                <div class="pcs-item"
+                <div class="pcs-item" role="listitem"
                   onmouseenter={() => pcsHover(idx)}
                   onmouseleave={() => pcsHover(null)}>
                   <div class="pcs-item-info">
@@ -489,13 +490,13 @@
         <h4>魔术棒</h4>
         <p class="muted">在画布上点击要选取的颜色区域，自动生成多边形</p>
         <div class="wand-row">
-          <label>颜色容差</label>
-          <input type="range" min="1" max="255" step="1" bind:value={ui.magicWandTolerance} />
+          <label for="pp-wand-tol">颜色容差</label>
+          <input id="pp-wand-tol" type="range" min="1" max="255" step="1" bind:value={ui.magicWandTolerance} />
           <span class="wand-value">{ui.magicWandTolerance}</span>
         </div>
         <div class="wand-row">
-          <label>轮廓简化</label>
-          <input type="range" min="0" max="20" step="0.5" bind:value={ui.magicWandSimplify} />
+          <label for="pp-wand-simp">轮廓简化</label>
+          <input id="pp-wand-simp" type="range" min="0" max="20" step="0.5" bind:value={ui.magicWandSimplify} />
           <span class="wand-value">{ui.magicWandSimplify}</span>
         </div>
         <div class="wand-row wand-check">
@@ -528,8 +529,8 @@
       <h4>批量预标注</h4>
       <p class="muted">先单图试跑满意后再批量</p>
       <div class="batch-row">
-        <label>模型</label>
-        <select bind:value={batchModel}>
+        <label for="pp-batch-model">模型</label>
+        <select id="pp-batch-model" bind:value={batchModel}>
           <option value="pose">人体 (17点)</option>
           <option value="face">人脸 (68点)</option>
           <option value="pcs">文本分割 (PCS)</option>
@@ -539,8 +540,8 @@
         <input type="text" class="pcs-input" placeholder="英文最准，如 flower（也可输中文）" bind:value={batchText}>
       {/if}
       <div class="batch-row">
-        <label>范围</label>
-        <select bind:value={batchScope}>
+        <label for="pp-batch-scope">范围</label>
+        <select id="pp-batch-scope" bind:value={batchScope}>
           <option value="empty">未标注图片</option>
           <option value="all">全部图片</option>
         </select>
@@ -562,13 +563,13 @@
       <h4>{t('annotationInfo')}</h4>
       {#if ui.selectedAnnotation}
         {@const ann = ui.selectedAnnotation}
-        <div class="row"><label>{t('id')}</label><span>{ann.id}</span></div>
-        <div class="row"><label>{t('type')}</label><span>{ann.type}</span></div>
+        <div class="row"><span class="lbl">{t('id')}</span><span>{ann.id}</span></div>
+        <div class="row"><span class="lbl">{t('type')}</span><span>{ann.type}</span></div>
         {#if ann.type === 'keypoint'}
           <!-- 关键点没有「目标类别」，只有「骨架类型」 -->
-          <div class="row"><label>骨架</label><span>{keypointDisplayName(ann.points.length, ann.skeletonId)}</span></div>
+          <div class="row"><span class="lbl">骨架</span><span>{keypointDisplayName(ann.points.length, ann.skeletonId)}</span></div>
         {:else}
-          <div class="row"><label>{t('label')}</label>
+          <div class="row"><span class="lbl">{t('label')}</span>
             <select value={ann.className} onchange={(e) => props.onChangeClass(ann.id, (e.target as HTMLSelectElement).value)}>
               {#each classes as c}
                 <option value={c} selected={ann.className === c}>{c}</option>
@@ -577,18 +578,18 @@
           </div>
         {/if}
         {#if ann.type === 'rect'}
-          <div class="row"><label>X</label><span>{ann.x.toFixed(1)}</span></div>
-          <div class="row"><label>Y</label><span>{ann.y.toFixed(1)}</span></div>
-          <div class="row"><label>W</label><span>{ann.w.toFixed(1)}</span></div>
-          <div class="row"><label>H</label><span>{ann.h.toFixed(1)}</span></div>
+          <div class="row"><span class="lbl">X</span><span>{ann.x.toFixed(1)}</span></div>
+          <div class="row"><span class="lbl">Y</span><span>{ann.y.toFixed(1)}</span></div>
+          <div class="row"><span class="lbl">W</span><span>{ann.w.toFixed(1)}</span></div>
+          <div class="row"><span class="lbl">H</span><span>{ann.h.toFixed(1)}</span></div>
         {:else if ann.type === 'rotated'}
-          <div class="row"><label>CX</label><span>{ann.cx.toFixed(1)}</span></div>
-          <div class="row"><label>CY</label><span>{ann.cy.toFixed(1)}</span></div>
-          <div class="row"><label>W</label><span>{ann.w.toFixed(1)}</span></div>
-          <div class="row"><label>H</label><span>{ann.h.toFixed(1)}</span></div>
-          <div class="row"><label>Angle</label><span>{ann.angle.toFixed(1)}°</span></div>
+          <div class="row"><span class="lbl">CX</span><span>{ann.cx.toFixed(1)}</span></div>
+          <div class="row"><span class="lbl">CY</span><span>{ann.cy.toFixed(1)}</span></div>
+          <div class="row"><span class="lbl">W</span><span>{ann.w.toFixed(1)}</span></div>
+          <div class="row"><span class="lbl">H</span><span>{ann.h.toFixed(1)}</span></div>
+          <div class="row"><span class="lbl">Angle</span><span>{ann.angle.toFixed(1)}°</span></div>
         {:else if ann.type === 'polygon' || ann.type === 'keypoint'}
-          <div class="row"><label>{t('coordinates')}</label><span>{ann.points.length} pts</span></div>
+          <div class="row"><span class="lbl">{t('coordinates')}</span><span>{ann.points.length} pts</span></div>
         {/if}
       {:else}
         <span class="muted">{t('selectHint')}</span>
@@ -611,8 +612,9 @@
       {:else}
         <div class="ann-list">
           {#each getCurrentAnnotations() as ann, i (ann.id + '__' + i)}
-            <div class="ann-item" class:active={ui.selectedAnnotation?.id === ann.id}
-              onclick={() => selectAnnotation(ann)}>
+            <div class="ann-item" class:active={ui.selectedAnnotation?.id === ann.id} role="button" tabindex="0"
+              onclick={() => selectAnnotation(ann)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAnnotation(ann); } }}>
               <span class="ann-type" style="color:{getClassColor(ann.className)}">{getTypeIcon(ann)}</span>
               <span class="ann-class">{ann.type === 'keypoint' ? keypointDisplayName(ann.points.length, ann.skeletonId) : ann.className}</span>
               <span class="ann-id">#{ann.id}</span>
@@ -633,7 +635,9 @@
         <p class="muted">另有 {getKeypointCount()} 个关键点骨架，不计入下面的类别统计</p>
       {/if}
       {#each classes as c, i}
-        <div class="class-item" class:active={getActiveClass() === c} onclick={() => setActiveClass(c)}>
+        <div class="class-item" class:active={getActiveClass() === c} role="button" tabindex="0"
+          onclick={() => setActiveClass(c)}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveClass(c); } }}>
           <span class="class-color" style="background:{getClassColor(c)}"></span>
           <span class="class-name">{c}</span>
           <span class="class-count">{getClassCounts()[c] || 0}</span>
@@ -661,8 +665,8 @@
         </div>
       {:else}
         <div class="export-format">
-          <label>{t('chooseFormat')}</label>
-          <select value={ui.exportFormat} onchange={(e) => ui.exportFormat = (e.target as HTMLSelectElement).value as ExportFormat}>
+          <label for="pp-export-format">{t('chooseFormat')}</label>
+          <select id="pp-export-format" value={ui.exportFormat} onchange={(e) => ui.exportFormat = (e.target as HTMLSelectElement).value as ExportFormat}>
             {#each formats as f}
               <option value={f.value}>{f.label}</option>
             {/each}
@@ -762,7 +766,7 @@
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 8px; font-size: var(--text-sm);
   }
-  .row label { color: var(--text-secondary); font-size: var(--text-xs); }
+  .row .lbl { color: var(--text-secondary); font-size: var(--text-xs); }
   .row select {
     width: 100px; padding: 5px 8px;
     background: var(--bg-primary);

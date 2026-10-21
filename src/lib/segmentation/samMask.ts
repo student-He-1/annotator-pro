@@ -30,6 +30,8 @@ export interface SegMaskResponse {
 let baseUrl = DEFAULT_BASE;
 let serverReady = false;
 let maskSupported = false;
+/** 后端 /predict 是否支持 box（框提示）；旧后端没有这个能力声明 */
+let boxSupported = false;
 /** embed 结果的**多图 LRU**（方案 P2：以前只有一个槽，切图必重编码 1~2 s）。
  *  imageKey → image_id。留 4 张：后端 `state_cache` 默认留 5 张，前端少留一张，
  *  正常情况下回到前几张图就是 0 成本；万一后端把它挤掉了，请求会 404 → 自动重新 embed 一次。 */
@@ -41,6 +43,7 @@ let embedRequests = 0;
 export function getSegBaseUrl(): string { return baseUrl; }
 export function isSegServerReady(): boolean { return serverReady; }
 export function isSegMaskSupported(): boolean { return maskSupported; }
+export function isSegBoxSupported(): boolean { return boxSupported; }
 
 /** 当前缓存了几张图的编码（UI 显示用） */
 export function getSegEmbedCacheSize(): number {
@@ -62,7 +65,7 @@ function isTauri(): boolean {
  *  而打包输出目录里并没有这个文件（sidecar 从未随 exe 发布）。
  *  所以这里绝不能「拉起失败就直接报错」——照文档手动起的后端还在 1421 上跑着，
  *  正确做法是忽略拉起失败，继续探测 /health。 */
-export async function connectSegBackend(startSidecar = true): Promise<{ ready: boolean; maskSupported: boolean; error?: string }> {
+export async function connectSegBackend(startSidecar = true): Promise<{ ready: boolean; maskSupported: boolean; boxSupported: boolean; error?: string }> {
   if (startSidecar && isTauri()) {
     try {
       const url = await ensureSidecar();
@@ -78,16 +81,19 @@ export async function connectSegBackend(startSidecar = true): Promise<{ ready: b
     serverReady = data?.model_loaded === true;
     const features: string[] = Array.isArray(data?.features) ? data.features : [];
     maskSupported = features.includes('mask');
+    boxSupported = features.includes('box');
     if (!serverReady) {
-      return { ready: false, maskSupported, error: '后端在线但模型还没加载完（冷启动 10~30 秒）' };
+      return { ready: false, maskSupported, boxSupported, error: '后端在线但模型还没加载完（冷启动 10~30 秒）' };
     }
-    return { ready: true, maskSupported };
+    return { ready: true, maskSupported, boxSupported };
   } catch (e: any) {
     serverReady = false;
     maskSupported = false;
+    boxSupported = false;
     return {
       ready: false,
       maskSupported: false,
+      boxSupported: false,
       error:
         `连不上 SAM 后端（${baseUrl}）。请先手动启动 Python 服务：\n` +
         `python src-tauri\\sidecar\\sam_server.py，看到 SAM_SERVER_READY 再点「连接后端」。（${e?.message || e}）`,
@@ -284,6 +290,30 @@ export async function predictWithPoints(
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
     throw new Error(`点分割失败 ${resp.status}${body ? ': ' + body.slice(0, 160) : ''}`);
+  }
+  const data = await resp.json();
+  const polygon: { x: number; y: number }[] = (data.polygon || []).map((pt: number[]) => ({ x: pt[0], y: pt[1] }));
+  let map: Uint8Array | null = null;
+  if (data.mask_png) {
+    map = await decodePngToMap(data.mask_png, img.naturalWidth, img.naturalHeight, true);
+  }
+  return { map, score: data.score || 0, polygon };
+}
+
+/** 框提示 → 单个实例掩膜（值 1）。box 用图像像素坐标，必须是 x2>x1 / y2>y1。 */
+export async function predictWithBox(
+  img: HTMLImageElement,
+  box: { x1: number; y1: number; x2: number; y2: number }
+): Promise<{ map: Uint8Array | null; score: number; polygon: { x: number; y: number }[] }> {
+  if (!serverReady) throw new Error('SAM 后端未连接：先点「连接后端」');
+  const resp = await postWithEmbed(img, '/predict', {
+    box: [box.x1, box.y1, box.x2, box.y2],
+    multimask: true,
+    return_mask: true,
+  });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`框分割失败 ${resp.status}${body ? ': ' + body.slice(0, 160) : ''}`);
   }
   const data = await resp.json();
   const polygon: { x: number; y: number }[] = (data.polygon || []).map((pt: number[]) => ({ x: pt[0], y: pt[1] }));

@@ -24,6 +24,9 @@ export interface MaskRegion {
   /** 像素数，接受时算一次 */
   area?: number;
   hidden?: boolean;
+  /** 「严格重叠」开启时才写：被后续区域覆盖掉的像素行程（"start:len,..."，行主序）。
+   *  显示仍以索引图为准；COCO 实例导出会把这段并回实例。旧工程没有该字段。 */
+  occluded?: string;
 }
 
 /** 内存里的掩膜（紧凑形态，不含解码图） */
@@ -79,4 +82,6 @@ export interface SegmentationSettings {
   /** 分割模式自己的类别表，不污染检测/分类的 classes */
   classes?: string[];
   classColors?: Record<string, string>;
+  /** 严格重叠：接受候选时额外记录被覆盖像素（默认关闭） */
+  strictOverlap?: boolean;
 }

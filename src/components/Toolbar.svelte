@@ -54,6 +54,8 @@
     { id: 'seg_brush', icon: 'wand', label: '画笔 (W)', key: 'W' },
     { id: 'seg_eraser', icon: 'trash', label: '橡皮 (E)', key: 'E' },
     { id: 'seg_refine', icon: 'sparkles', label: '负点修正 (R)', key: 'R' },
+    { id: 'seg_split', icon: 'scissors', label: '区域拆分 (C)', key: 'C' },
+    { id: 'seg_box', icon: 'square', label: '框提示 (X)', key: 'X' },
   ];
 
   /** 工具栏提示里的键位跟着设置里改过的快捷键走。
@@ -160,12 +162,10 @@
   </button>
 
   <div class="divider"></div>
-  <!-- 数据集划分 / 批量操作都是按 annotations 算的，分割模式下它们看到的永远是 0 → 隐藏 -->
-  {#if ui.workMode !== 'segmentation'}
+  <!-- 数据集划分已按模式取数（检测=标注 / 分类=标签 / 分割=掩膜区域），三种模式都可用 -->
   <button class="icon-btn" onclick={props.onDatasetSplit} title="数据集划分">
     <Icon name="pie-chart" size={16} />
   </button>
-  {/if}
   {#if ui.workMode === 'detection'}
   <button class="icon-btn" onclick={props.onQualityCheck} title="标注质量校验">
     <Icon name="check" size={16} />

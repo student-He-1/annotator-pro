@@ -133,8 +133,8 @@
   }
 </script>
 
-<div class="modal-overlay" onclick={onClose}>
-  <div class="modal" onclick={e => e.stopPropagation()}>
+<div class="modal-overlay" role="presentation" onclick={onClose}>
+  <div class="modal" role="presentation" onclick={e => e.stopPropagation()}>
     <div class="modal-header">
       <h3>SAM 智能分割</h3>
       <button class="close-btn" onclick={onClose}>×</button>
@@ -160,16 +160,16 @@
         <h4>2. 参数配置</h4>
         <p class="hint">这里的参数和画布上的 SAM 工具（M 键）共用一份，改一处两边都生效</p>
         <div class="form-row">
-          <label>Mask 阈值</label>
-          <input type="number" bind:value={ui.samMaskThreshold} step="0.1" min="-1" max="1" />
+          <label for="sam-mask-th">Mask 阈值</label>
+          <input id="sam-mask-th" type="number" bind:value={ui.samMaskThreshold} step="0.1" min="-1" max="1" />
         </div>
         <div class="form-row">
-          <label>多边形简化精度</label>
-          <input type="number" bind:value={ui.samSimplifyTolerance} step="0.5" min="0" max="10" />
+          <label for="sam-simplify">多边形简化精度</label>
+          <input id="sam-simplify" type="number" bind:value={ui.samSimplifyTolerance} step="0.5" min="0" max="10" />
         </div>
         <div class="form-row">
-          <label>多 Mask 候选（取最优）</label>
-          <input type="checkbox" bind:checked={ui.samMultiMask} />
+          <label for="sam-multi-mask">多 Mask 候选（取最优）</label>
+          <input id="sam-multi-mask" type="checkbox" bind:checked={ui.samMultiMask} />
         </div>
         <button class="btn-link" onclick={resetSamParams}>恢复默认值</button>
       </div>

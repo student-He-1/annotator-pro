@@ -1,5 +1,22 @@
 /** 数据集划分工具 — train/val/test 按比例随机划分 */
-import { images, annotations } from './state.svelte';
+import { images, annotations, ui } from './state.svelte';
+import { getRegionCount } from './segmentation/store.svelte';
+
+/** 当前模式下每张图的「标注单元」数量。
+ *  检测 = 标注对象数，分类 = 图片标签数，分割 = 掩膜区域数。
+ *  以前这里只看 `annotations`，分类/分割模式下永远是 0，「仅划分已标注图片」会筛出空集。 */
+export function annotationUnitCount(name: string): number {
+  if (ui.workMode === 'segmentation') return getRegionCount(name);
+  if (ui.workMode === 'classification') return ui.imageLabels[name]?.length || 0;
+  return annotations[name]?.length || 0;
+}
+
+/** 「标注单元」在当前模式下的中文名（给界面文案用） */
+export function annotationUnitLabel(): string {
+  if (ui.workMode === 'segmentation') return '区域';
+  if (ui.workMode === 'classification') return '标签';
+  return '标注';
+}
 
 export interface SplitConfig {
   train: number;  // 0-1
@@ -49,7 +66,7 @@ export function splitDataset(config: SplitConfig): SplitResult {
   // 筛选图片
   let imgList = images.map(img => img.name);
   if (onlyAnnotated) {
-    imgList = imgList.filter(name => (annotations[name]?.length || 0) > 0);
+    imgList = imgList.filter(name => annotationUnitCount(name) > 0);
   }
 
   // Fisher-Yates 洗牌（可复现）
@@ -69,9 +86,9 @@ export function splitDataset(config: SplitConfig): SplitResult {
   const valSet = shuffled.slice(trainEnd, valEnd);
   const testSet = shuffled.slice(valEnd);
 
-  // 统计标注数
+  // 统计标注单元数（检测=标注，分类=标签，分割=区域）
   const countAnns = (names: string[]) =>
-    names.reduce((sum, name) => sum + (annotations[name]?.length || 0), 0);
+    names.reduce((sum, name) => sum + annotationUnitCount(name), 0);
 
   return {
     train: trainSet,

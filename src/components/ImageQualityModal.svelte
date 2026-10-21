@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { images, showToast } from '$lib/state.svelte';
   import { runImageQualityCheck, DEFAULT_IMAGE_QUALITY_CONFIG } from '$lib/imageQuality';
   import type { ImageQualityReport, ImageQualityIssue, ImageQualityConfig } from '$lib/imageQuality';
@@ -85,8 +85,8 @@
   }
 </script>
 
-<div class="modal-overlay" onclick={onClose}>
-  <div class="modal" onclick={e => e.stopPropagation()}>
+<div class="modal-overlay" role="presentation" onclick={onClose}>
+  <div class="modal" role="presentation" onclick={e => e.stopPropagation()}>
     <div class="modal-header">
       <h3>图片质量筛查</h3>
       <button class="close-btn" onclick={onClose}>×</button>
@@ -113,20 +113,20 @@
 
         <div class="params-grid">
           <div class="param-row">
-            <label>模糊阈值（清晰度）</label>
-            <input type="number" bind:value={blurThreshold} min="1" disabled={!checkBlur} />
+            <label for="iq-blur">模糊阈值（清晰度）</label>
+            <input id="iq-blur" type="number" bind:value={blurThreshold} min="1" disabled={!checkBlur} />
           </div>
           <div class="param-row">
-            <label>过暗阈值（0-255）</label>
-            <input type="number" bind:value={darkThreshold} min="0" max="255" disabled={!checkBrightness} />
+            <label for="iq-dark">过暗阈值（0-255）</label>
+            <input id="iq-dark" type="number" bind:value={darkThreshold} min="0" max="255" disabled={!checkBrightness} />
           </div>
           <div class="param-row">
-            <label>过亮阈值（0-255）</label>
-            <input type="number" bind:value={brightThreshold} min="0" max="255" disabled={!checkBrightness} />
+            <label for="iq-bright">过亮阈值（0-255）</label>
+            <input id="iq-bright" type="number" bind:value={brightThreshold} min="0" max="255" disabled={!checkBrightness} />
           </div>
           <div class="param-row">
-            <label>重复阈值（汉明距离）</label>
-            <input type="number" bind:value={duplicateThreshold} min="0" max="64" disabled={!checkDuplicate} />
+            <label for="iq-dup">重复阈值（汉明距离）</label>
+            <input id="iq-dup" type="number" bind:value={duplicateThreshold} min="0" max="64" disabled={!checkDuplicate} />
           </div>
         </div>
       </div>
@@ -188,7 +188,9 @@
                       </span>
                       <span class="issue-image" title={issue.image}>{issue.image}</span>
                       {#if issue.duplicateOf}
-                        <span class="duplicate-link" onclick={() => handleJumpDuplicate(issue)}
+                        <span class="duplicate-link" role="button" tabindex="0"
+                          onclick={() => handleJumpDuplicate(issue)}
+                          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleJumpDuplicate(issue); } }}
                           title="跳转到相似图片">
                           ↔ {issue.duplicateOf}
                         </span>

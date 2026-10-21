@@ -24,7 +24,7 @@
     runPointPrompt, hitTestRegion, selectRegion, clearRegionSelection, deleteSelectedRegion,
     undoMask, redoMask, onImageSwitched, clearCandidates,
     beginMaskStroke, paintAt, endMaskStroke, ensureBrushRegion, brushTargetOrdinal,
-    refineSelectedWithPoint, mergeRegionInto, clearRefinePoints,
+    refineSelectedWithPoint, mergeRegionInto, clearRefinePoints, splitRegionByLine, runBoxPrompt,
   } from '$lib/segmentation/store.svelte';
 
   let canvasEl: HTMLCanvasElement;
@@ -170,7 +170,7 @@
     return true;
   }
 
-  function handleMouseDown(e: MouseEvent) {
+  export function handleMouseDown(e: MouseEvent) {
     // 自由平移模式下忽略 mousedown
     if (freePanning) return;
     // Alt+左键：先判「删多边形顶点」，没命中顶点才当平移用
@@ -383,6 +383,10 @@
   let segPaintOrdinal = 0;
   let segLastPt: { x: number; y: number } | null = null;
   let segLastRenderAt = 0;
+  /** 区域拆分：按下时的起点（null = 没在拉线） */
+  let segCutStart: { x: number; y: number } | null = null;
+  /** 框提示：按下时的起点（null = 没在拖框） */
+  let segBoxStart: { x: number; y: number } | null = null;
 
   /** 分割模式的 mousedown。
    *  平移/缩放（中键、Alt+拖、滚轮）在上面的公共分支里已经处理过，这里只管区域交互。 */
@@ -395,6 +399,24 @@
     if (ui.currentTool === 'seg_refine') {
       // 负点修正：正点=保留、Shift=排除；每次点击都是一步可撤销的编辑
       void refineSelectedWithPoint(imgPos.x, imgPos.y, e.shiftKey ? 0 : 1);
+      return;
+    }
+    if (ui.currentTool === 'seg_box') {
+      // 框提示：拉一个框，松手后才请求后端
+      segBoxStart = { x: imgPos.x, y: imgPos.y };
+      ui.segBoxPreview = { x1: imgPos.x, y1: imgPos.y, x2: imgPos.x, y2: imgPos.y };
+      render();
+      return;
+    }
+    if (ui.currentTool === 'seg_split') {
+      // 区域拆分：必须有选中区域，然后在画布上拉一条线当刀口
+      if (!ui.segSelectedRegion) {
+        showToast('先用选择工具(V)点选一个区域，再拉线拆分', 'info');
+        return;
+      }
+      segCutStart = { x: imgPos.x, y: imgPos.y };
+      ui.segSplitPreview = { x1: imgPos.x, y1: imgPos.y, x2: imgPos.x, y2: imgPos.y };
+      render();
       return;
     }
     if (ui.currentTool === 'seg_brush' || ui.currentTool === 'seg_eraser') {
@@ -427,6 +449,18 @@
 
   /** 画笔拖动：在上一点和当前点之间补几笔，避免快速拖动出现断点 */
   function segPaintDrag(imgPos: { x: number; y: number }) {
+    // 框提示：只更新预览框，松手才请求
+    if (segBoxStart) {
+      ui.segBoxPreview = { x1: segBoxStart.x, y1: segBoxStart.y, x2: imgPos.x, y2: imgPos.y };
+      render();
+      return;
+    }
+    // 区域拆分：只更新预览线，不动掩膜
+    if (segCutStart) {
+      ui.segSplitPreview = { x1: segCutStart.x, y1: segCutStart.y, x2: imgPos.x, y2: imgPos.y };
+      render();
+      return;
+    }
     if (!segDrawing || !segLastPt) return;
     const r = Math.max(1, ui.segBrushSize / 2);
     const dx = imgPos.x - segLastPt.x;
@@ -445,7 +479,32 @@
     }
   }
 
-  function segMouseUp() {
+  function segMouseUp(imgPos?: { x: number; y: number }) {
+    if (segBoxStart) {
+      const p = ui.segBoxPreview;
+      segBoxStart = null;
+      ui.segBoxPreview = null;
+      if (!p) { render(); return; }
+      if (imgPos) { p.x2 = imgPos.x; p.y2 = imgPos.y; }
+      // 坐标顺序无所谓：store 里会规范化并夹到图片内
+      void runBoxPrompt(p.x1, p.y1, p.x2, p.y2);
+      render();
+      return;
+    }
+    if (segCutStart) {
+      const p = ui.segSplitPreview;
+      segCutStart = null;
+      ui.segSplitPreview = null;
+      if (!p) { render(); return; }
+      if (imgPos) { p.x2 = imgPos.x; p.y2 = imgPos.y; }
+      if (Math.hypot(p.x2 - p.x1, p.y2 - p.y1) < 5) {
+        showToast('这条线太短，已取消拆分', 'info');
+      } else {
+        splitRegionByLine(ui.segSelectedRegion, p.x1, p.y1, p.x2, p.y2);
+      }
+      render();
+      return;
+    }
     if (segDrawing) {
       segDrawing = false;
       segLastPt = null;
@@ -493,6 +552,10 @@
       clearCandidates();
       clearRefinePoints();
       clearRegionSelection();
+      segCutStart = null;
+      ui.segSplitPreview = null;
+      segBoxStart = null;
+      ui.segBoxPreview = null;
       setTool('seg_select');
       render();
       return;
@@ -505,9 +568,11 @@
     if (key === 'w') { setTool('seg_brush'); return; }
     if (key === 'e') { setTool('seg_eraser'); return; }
     if (key === 'r') { setTool('seg_refine'); return; }
+    if (key === 'c') { setTool('seg_split'); return; }
+    if (key === 'x') { setTool('seg_box'); return; }
   }
 
-  function handleMouseMove(e: MouseEvent) {
+  export function handleMouseMove(e: MouseEvent) {
     if (freePanning) {
       // 自由平移模式：鼠标移动即平移，以 panStart 为基准
       ui.panX = e.clientX - panStart.x;
@@ -605,11 +670,14 @@
     }
   }
 
-  function handleMouseUp(e: MouseEvent) {
+  export function handleMouseUp(e: MouseEvent) {
     if (isPanning) { isPanning = false; return; }
 
-    // 分割模式：收尾画笔这一笔（点提示/修正是异步的，不在这里等）
-    if (ui.workMode === 'segmentation') { segMouseUp(); return; }
+    // 分割模式：收尾画笔这一笔 / 拆分线（点提示/修正是异步的，不在这里等）
+    if (ui.workMode === 'segmentation') {
+      segMouseUp(ui.currentImage ? screenToImage(e.clientX, e.clientY) : undefined);
+      return;
+    }
 
     // SAM 工具：判断点击还是拖拽，运行分割
     if (samStart && ui.currentTool === 'sam') {
@@ -682,7 +750,7 @@
     ui.mouseOverCanvas = false;
   }
 
-  function handleDoubleClick(e: MouseEvent) {
+  export function handleDoubleClick(e: MouseEvent) {
     if (ui.workMode === 'segmentation') {
       const p = screenToImage(e.clientX, e.clientY);
       const ord = hitTestRegion(p.x, p.y);
@@ -713,7 +781,7 @@
     }
   }
 
-  function handleWheel(e: WheelEvent) {
+  export function handleWheel(e: WheelEvent) {
     e.preventDefault();
     const rect = canvasEl.getBoundingClientRect();
     const mx = e.clientX - rect.left;
@@ -729,7 +797,7 @@
     render();
   }
 
-  function handleContextMenu(e: MouseEvent) {
+  export function handleContextMenu(e: MouseEvent) {
     e.preventDefault();
     // 自由平移模式下：右键退出
     if (freePanning) {
@@ -849,7 +917,7 @@
     return eKey === key;
   }
 
-  function handleKeyDown(e: KeyboardEvent) {
+  export function handleKeyDown(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
 
     if (ui.recordingShortcut) {
@@ -1067,7 +1135,7 @@
   // 注意：`render` 必须一起导出 —— App 里有 `canvasRef?.render()`（LabelMe 导入后重画）。
   // 以前没导出，那行在运行时是「canvasRef.render is not a function」，
   // 被 try/catch 吞成「导入失败」，直到类型检查才把它暴露出来。
-  export { handleMouseDown, handleMouseMove, handleMouseUp, handleDoubleClick, handleWheel, handleContextMenu, handleKeyDown, undo, redo, deleteSelected, copySelected, fitToScreen, render };
+  export { undo, redo, deleteSelected, copySelected, fitToScreen, render };
 </script>
 
 <svelte:window onkeydown={handleKeyDown} onmouseup={handleWindowMouseUp} onmousemove={handleWindowMouseMove} />
@@ -1123,15 +1191,17 @@
 
   {#if contextMenu}
     <div class="context-menu" style="left:{contextMenu.x}px;top:{contextMenu.y}px">
-      <div class="context-item" onclick={handleContextDelete}>🗑 {t('delete')} <span class="shortcut">Del</span></div>
-      <div class="context-item" onclick={handleContextCopy}>📋 {t('copy')} <span class="shortcut">Ctrl+D</span></div>
+      <div class="context-item" role="button" tabindex="0" onclick={handleContextDelete}
+        onkeydown={(e) => { if (e.key === 'Enter') handleContextDelete(); }}>🗑 {t('delete')} <span class="shortcut">Del</span></div>
+      <div class="context-item" role="button" tabindex="0" onclick={handleContextCopy}
+        onkeydown={(e) => { if (e.key === 'Enter') handleContextCopy(); }}>📋 {t('copy')} <span class="shortcut">Ctrl+D</span></div>
     </div>
   {/if}
 </div>
 
 {#if contextMenu}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="context-overlay" onclick={hideContextMenu}></div>
+  <div class="context-overlay" role="presentation" onclick={hideContextMenu}></div>
 {/if}
 
 <style>

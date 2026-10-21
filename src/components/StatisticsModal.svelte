@@ -91,8 +91,8 @@
   }
 </script>
 
-<div class="modal-overlay" onclick={onClose}>
-  <div class="modal" onclick={e => e.stopPropagation()}>
+<div class="modal-overlay" role="presentation" onclick={onClose}>
+  <div class="modal" role="presentation" onclick={e => e.stopPropagation()}>
     <div class="modal-header">
       <h3>标注统计</h3>
       <button class="close-btn" onclick={onClose}>×</button>

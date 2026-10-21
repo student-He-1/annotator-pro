@@ -85,8 +85,8 @@
   }
 </script>
 
-<div class="overlay" onclick={onClose}>
-  <div class="modal" onclick={(e) => e.stopPropagation()}>
+<div class="overlay" role="presentation" onclick={onClose}>
+  <div class="modal" role="presentation" onclick={(e) => e.stopPropagation()}>
     <h3>{t('settings')}</h3>
 
     <div class="section">
@@ -140,8 +140,9 @@
       {#each entries as [key, shortcut]}
         <div class="shortcut-row">
           <span class="name">{t(shortcutNames[key] || key)}</span>
-          <span class="key" class:recording={ui.recordingShortcut === key}
-            onclick={() => startRecording(key)}>
+          <span class="key" class:recording={ui.recordingShortcut === key} role="button" tabindex="0"
+            onclick={() => startRecording(key)}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startRecording(key); } }}>
             {ui.recordingShortcut === key ? t('recording') : shortcut.split('+').map(k => k.charAt(0).toUpperCase() + k.slice(1)).join('+')}
           </span>
         </div>

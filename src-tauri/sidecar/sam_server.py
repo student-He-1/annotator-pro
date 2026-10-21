@@ -91,6 +91,9 @@ class PredictRequest(BaseModel):
     # 老前端只传单点，行为与以前完全一致。
     points: Optional[list[list[float]]] = None
     labels: Optional[list[int]] = None
+    # 可选：框提示 [x1, y1, x2, y2]（图像像素坐标）。
+    # 给了 points 时点是主角，框只作为额外约束；只给 box 时走纯框提示。
+    box: Optional[list[float]] = None
 
 
 class PredictResponse(BaseModel):
@@ -207,13 +210,26 @@ def predict(req: PredictRequest):
         raise HTTPException(404, "Image not found, call /embed first")
 
     t0 = time.time()
-    # 多点多标签（负点修正）优先；没给就退回单点，老调用方行为不变
+    # 可选框提示（x1,y1,x2,y2）；坐标顺序颠倒或退化直接 400，别让模型去猜
+    box = None
+    if req.box is not None:
+        if len(req.box) != 4:
+            raise HTTPException(400, "box must be [x1, y1, x2, y2]")
+        x1, y1, x2, y2 = [float(v) for v in req.box]
+        if not (x2 > x1 and y2 > y1):
+            raise HTTPException(400, "box must satisfy x2 > x1 and y2 > y1")
+        box = np.array([[x1, y1, x2, y2]], dtype=np.float32)
+
+    # 多点多标签（负点修正）优先；只给 box 时点参数留空；都没有就退回旧单点
     if req.points:
         coords = np.array([[float(p[0]), float(p[1])] for p in req.points], dtype=np.float32)
         if req.labels and len(req.labels) == len(req.points):
             point_labels = np.array([int(v) for v in req.labels], dtype=np.int32)
         else:
             point_labels = np.ones(len(req.points), dtype=np.int32)
+    elif box is not None:
+        coords = None
+        point_labels = None
     else:
         coords = np.array([[req.x, req.y]], dtype=np.float32)
         point_labels = np.array([req.label], dtype=np.int32)
@@ -223,6 +239,7 @@ def predict(req: PredictRequest):
             inference_state=state,
             point_coords=coords,
             point_labels=point_labels,
+            box=box,
             multimask_output=req.multimask
         )
     elapsed = (time.time() - t0) * 1000
@@ -398,7 +415,8 @@ def health():
         "pose_loaded": pose_model is not None,
         "face_loaded": face_model is not None,
         "cached_images": len(state_cache),
-        "features": ["mask"]  # 可选能力声明：支持 return_mask 像素级掩膜
+        # 可选能力声明：mask = return_mask 像素级掩膜；box = /predict 支持框提示
+        "features": ["mask", "box"]
     }
 
 

@@ -92,6 +92,116 @@ export function mergeRun(src: Uint8Array, srcValue: number, dst: Uint8Array, dst
   return n;
 }
 
+/** 被遮挡像素的行程（升序、互不重叠）："start:len,start:len"。
+ *  只是「严格重叠」开启后才有的可选字段，旧工程没有就是空。 */
+export interface IndexRun { start: number; len: number }
+
+export function decodeIndexRuns(s: string | undefined | null): IndexRun[] {
+  if (!s) return [];
+  const out: IndexRun[] = [];
+  for (const part of s.split(',')) {
+    const [a, b] = part.split(':');
+    const start = parseInt(a, 10);
+    const len = parseInt(b, 10);
+    if (Number.isFinite(start) && Number.isFinite(len) && len > 0) out.push({ start, len });
+  }
+  return out;
+}
+
+function normalizeIndexRuns(runs: IndexRun[]): IndexRun[] {
+  const sorted = runs.filter(r => r.len > 0).sort((a, b) => a.start - b.start);
+  const out: IndexRun[] = [];
+  for (const r of sorted) {
+    const last = out[out.length - 1];
+    const end = r.start + r.len;
+    if (last && r.start <= last.start + last.len) {
+      const lastEnd = last.start + last.len;
+      if (end > lastEnd) last.len = end - last.start;
+    } else {
+      out.push({ start: r.start, len: r.len });
+    }
+  }
+  return out;
+}
+
+function runsToString(runs: IndexRun[]): string {
+  return normalizeIndexRuns(runs).map(r => `${r.start}:${r.len}`).join(',');
+}
+
+/** 把升序像素索引并进已有行程串（返回新的串，不改入参） */
+export function mergeIndexRuns(existing: string | undefined, indices: number[]): string {
+  const runs = decodeIndexRuns(existing);
+  let i = 0;
+  while (i < indices.length) {
+    const start = indices[i];
+    let end = start + 1;
+    i++;
+    while (i < indices.length && indices[i] === end) { end++; i++; }
+    runs.push({ start, len: end - start });
+  }
+  return runsToString(runs);
+}
+
+/** 两个行程串取并集（合并区域时用） */
+export function unionIndexRuns(a: string | undefined, b: string | undefined): string {
+  if (!a) return b || '';
+  if (!b) return a;
+  return runsToString([...decodeIndexRuns(a), ...decodeIndexRuns(b)]);
+}
+
+/** 把行程串里记录的被遮挡像素写进索引图（导出时用） */
+export function applyIndexRuns(target: Uint8Array, s: string | undefined, value: number) {
+  for (const r of decodeIndexRuns(s)) {
+    const end = Math.min(target.length, r.start + r.len);
+    for (let i = Math.max(0, r.start); i < end; i++) target[i] = value;
+  }
+}
+
+/** 严格重叠：在把候选写进索引图**之前**，先统计会覆盖到的已有区域像素。
+ *  `ordinalOf(k)` 把候选值映射成即将写入的 ordinal；只有 `old <= maxOldOrdinal`
+ *  （即写入前就存在的区域）才计入，同一批候选之间互相覆盖不算「遮挡已有实例」。 */
+export function collectOverwritten(
+  candMap: Uint8Array,
+  map: Uint8Array,
+  ordinalOf: (k: number) => number,
+  maxOldOrdinal: number,
+): Map<number, number[]> {
+  const hits = new Map<number, number[]>();
+  const n = Math.min(candMap.length, map.length);
+  for (let i = 0; i < n; i++) {
+    const v = candMap[i];
+    if (!v) continue;
+    if (!ordinalOf(v)) continue;
+    const old = map[i];
+    if (!old || old > maxOldOrdinal) continue;
+    let arr = hits.get(old);
+    if (!arr) { arr = []; hits.set(old, arr); }
+    arr.push(i);
+  }
+  return hits;
+}
+
+/** 重叠检测（纯函数）：候选索引图会覆盖多少**已有区域**的像素，以及涉及几个区域。
+ *  `only` 限定只统计这些候选值（空集 = 没有候选，返回 0）。背景 0 不算覆盖。 */
+export function measureOverlapPixels(
+  candMap: Uint8Array,
+  map: Uint8Array,
+  only: Set<number>,
+): { px: number; regions: number } {
+  const res = { px: 0, regions: 0 };
+  if (only.size === 0) return res;
+  const hits = new Set<number>();
+  const n = Math.min(candMap.length, map.length);
+  for (let i = 0; i < n; i++) {
+    const v = candMap[i];
+    if (!v || !only.has(v)) continue;
+    const old = map[i];
+    if (old) { res.px++; hits.add(old); }
+  }
+  res.regions = hits.size;
+  return res;
+}
+
 /** 删除某个 ordinal 的像素（置 0），并把它之后的所有 ordinal 递减 1。
  *  ordinal 与 regions 下标必须严格一一对应，删了不 repack 就会出现
  *  「索引图里有值、regions 里没这个区域」→ 导出时越界 / 渲染时漏色。 */

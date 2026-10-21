@@ -188,41 +188,59 @@ export function extractContour(mask: Uint8Array, width: number, height: number):
 }
 
 /**
- * Douglas-Peucker 多边形简化算法
+ * Douglas-Peucker 多边形简化算法（迭代版）
+ *
+ * 以前是递归实现：复杂掩膜的轮廓有几万~几十万个点，递归深度跟着点数走，
+ * 会直接 `Maximum call stack size exceeded`（YOLO 分割 TXT 导出就是这么炸的）。
+ * 改成显式栈 + keep 标记，结果与递归版一致，但不会爆栈。
  */
 function douglasPeucker(points: Pixel[], tolerance: number): Pixel[] {
-  if (points.length <= 2) return points;
+  const n = points.length;
+  if (n <= 2) return points;
 
-  const perpDistance = (p: Pixel, lineStart: Pixel, lineEnd: Pixel): number => {
-    const dx = lineEnd.x - lineStart.x;
-    const dy = lineEnd.y - lineStart.y;
+  const keep = new Uint8Array(n);
+  keep[0] = 1;
+  keep[n - 1] = 1;
+  const stack: [number, number][] = [[0, n - 1]];
+
+  while (stack.length > 0) {
+    const [first, last] = stack.pop()!;
+    if (last <= first + 1) continue;
+
+    const a = points[first];
+    const b = points[last];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
     const mag = Math.sqrt(dx * dx + dy * dy);
-    if (mag === 0) return Math.hypot(p.x - lineStart.x, p.y - lineStart.y);
-    return Math.abs(dy * p.x - dx * p.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x) / mag;
-  };
 
-  let maxDist = 0;
-  let maxIndex = 0;
+    let maxDist = -1;
+    let maxIndex = -1;
+    for (let i = first + 1; i < last; i++) {
+      const p = points[i];
+      const dist = mag === 0
+        ? Math.hypot(p.x - a.x, p.y - a.y)
+        : Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / mag;
+      if (dist > maxDist) {
+        maxDist = dist;
+        maxIndex = i;
+      }
+    }
 
-  for (let i = 1; i < points.length - 1; i++) {
-    const dist = perpDistance(points[i], points[0], points[points.length - 1]);
-    if (dist > maxDist) {
-      maxDist = dist;
-      maxIndex = i;
+    if (maxDist > tolerance && maxIndex > first) {
+      keep[maxIndex] = 1;
+      stack.push([first, maxIndex], [maxIndex, last]);
     }
   }
 
-  if (maxDist > tolerance) {
-    const left = douglasPeucker(points.slice(0, maxIndex + 1), tolerance);
-    const right = douglasPeucker(points.slice(maxIndex), tolerance);
-    return left.slice(0, -1).concat(right);
-  } else {
-    return [points[0], points[points.length - 1]];
-  }
+  const out: Pixel[] = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(points[i]);
+  return out;
 }
 
 /**
- * 简化多边形点 — 先用距离过滤密集点，再用 Douglas-Peucker
+ * 简化多边形点 — 先用距离过滤密集点，再用 Douglas-Peucker。
+ * 超过 MAX_DP_POINTS 时先均匀降采样：病态的长锯齿轮廓会让 DP 退化成 O(n²)，
+ * YOLO 分割导出会因此卡很久；8000 点对导出精度已经足够。
  */
 export function simplifyPolygon(points: Pixel[], tolerance: number): Pixel[] {
   if (points.length <= 3) return points;
@@ -238,8 +256,20 @@ export function simplifyPolygon(points: Pixel[], tolerance: number): Pixel[] {
 
   if (filtered.length <= 3) return filtered;
 
-  // 第二步：Douglas-Peucker 简化
-  return douglasPeucker(filtered, tolerance);
+  // 第二步：点数过多时均匀降采样，避免 DP 最坏情况卡死
+  let pts = filtered;
+  const MAX_DP_POINTS = 8000;
+  if (pts.length > MAX_DP_POINTS) {
+    const stride = Math.ceil(pts.length / MAX_DP_POINTS);
+    const sampled: Pixel[] = [];
+    for (let i = 0; i < pts.length; i += stride) sampled.push(pts[i]);
+    const last = pts[pts.length - 1];
+    if (sampled[sampled.length - 1] !== last) sampled.push(last);
+    pts = sampled;
+  }
+
+  // 第三步：Douglas-Peucker 简化
+  return douglasPeucker(pts, tolerance);
 }
 
 /**

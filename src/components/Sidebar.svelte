@@ -24,8 +24,15 @@
     if (images.length === 0) return '';
     if (ui.workMode === 'segmentation') {
       ui.maskRev;   // 掩膜数据在 segmentation/store 里，读这个版本号建立响应式依赖
-      const n = Object.keys(ui.maskCounts || {}).filter(k => (ui.maskCounts[k] || 0) > 0).length;
-      return `已分割 ${n} 张 / 共 ${images.length} 张 · ${ui.maskTotal || 0} 个区域`;
+      // 只统计当前图片列表里的掩膜：旧文件夹的掩膜还在缓存里（重新导入可恢复），
+      // 但不能把别的文件夹的「已分割张数 / 区域数」算进来。
+      const current = new Set(images.map(i => i.name));
+      let done = 0;
+      let regions = 0;
+      for (const [name, n] of Object.entries(ui.maskCounts || {})) {
+        if (n > 0 && current.has(name)) { done++; regions += n; }
+      }
+      return `已分割 ${done} 张 / 共 ${images.length} 张 · ${regions} 个区域`;
     }
     if (ui.workMode === 'classification') {
       // 统计口径统一走 state 里的按模式取数函数，别在这里再写一份
@@ -96,7 +103,9 @@
           {@const idx = startIndex + i}
           <div class="file-item" class:active={idx === ui.currentImageIndex}
             class:has-annotations={ui.workMode === 'detection' && (annotations[img.name]?.length || 0) > 0}
+            role="button" tabindex="0"
             onclick={() => props.onSelectImage(idx)}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); props.onSelectImage(idx); } }}
             style="height:{ITEM_HEIGHT}px">
             <Icon name="image" size={14} class="file-icon" />
             <span class="file-name">{img.name}</span>

@@ -4,7 +4,9 @@ import {
   images, annotations, classes, classColors, ui, selectAnnotation, showToast,
 } from './state.svelte';
 import { render, fitToScreen } from './canvas/engine.svelte';
-import { getAllSkeletons } from './skeletons';
+import {
+  getAllSkeletons, BUILTIN_SKELETONS, mergeCustomSkeletons, type SkeletonTemplate,
+} from './skeletons';
 import {
   serializeMasks, hasAnyMask, loadMasksFromProject, serializeSegSettings, loadSegSettings, markMasksSaved,
 } from './segmentation/store.svelte';
@@ -32,6 +34,24 @@ export function buildProjectFile(name: string): ProjectFile {
     height: img.height,
   }));
 
+  // 关键点标注引用到的自定义骨架模板随工程走：换机器打开时本机没有这些模板，
+  // 只能退回「按点数猜」，连线和导出名都会变样。只写实际引用到、且非内置的模板。
+  const builtinIds = new Set(BUILTIN_SKELETONS.map(s => s.id));
+  const referenced = new Set<string>();
+  for (const list of Object.values(annotations)) {
+    for (const ann of list) {
+      if (ann.type === 'keypoint' && ann.skeletonId && ann.skeletonId !== 'none') {
+        referenced.add(ann.skeletonId);
+      }
+    }
+  }
+  const allSkeletons = getAllSkeletons();
+  const bundledSkeletons: SkeletonTemplate[] = [...referenced]
+    .filter(id => !builtinIds.has(id))
+    .map(id => allSkeletons.find(s => s.id === id))
+    .filter((t): t is SkeletonTemplate => !!t)
+    .map(t => JSON.parse(JSON.stringify(t)));
+
   const withSeg = ui.workMode === 'segmentation' || hasAnyMask();
   return {
     version: PROJECT_VERSION,
@@ -51,6 +71,7 @@ export function buildProjectFile(name: string): ProjectFile {
       skeletonId: ui.skeletonId,
       workMode: ui.workMode,
       segmentation: withSeg ? serializeSegSettings() : undefined,
+      skeletons: bundledSkeletons.length > 0 ? bundledSkeletons : undefined,
     },
   };
 }
@@ -144,6 +165,13 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     Object.keys(annotations).forEach(k => delete annotations[k]);
     Object.assign(annotations, project.annotations || {});
 
+    // 工程可能自带自定义骨架模板定义（换机器打开时本机 localStorage 里没有）。
+    // 先合并进本机，再检查缺失 —— 否则刚补进来的模板也会被当成「不存在」。
+    let importedSkeletons = 0;
+    if (Array.isArray(project.settings?.skeletons) && project.settings.skeletons.length > 0) {
+      importedSkeletons = mergeCustomSkeletons(project.settings.skeletons);
+    }
+
     // 关键点标注记着 skeletonId（模板 id）。自定义模板只存在本机 localStorage 里，
     // 换台机器打开同一个工程时可能找不到 —— 那就只能退回「按点数猜」，
     // 连线和导出都会跟着变样。这里明确提示一下，别让它静默降级。
@@ -163,6 +191,8 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
           `相关关键点会按点数粗略绘制；请在本机重新创建同名模板`,
           'error'
         );
+      } else if (importedSkeletons > 0) {
+        showToast(`已从工程导入 ${importedSkeletons} 个自定义骨架模板`, 'success');
       }
     }
 

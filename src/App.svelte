@@ -9,7 +9,7 @@
     classColors as colors, getClassColor, pushHistory,
     annotations, markModified, imageModified, forgetUndoBaseline,
   } from './lib/state.svelte';
-  import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask, formatDropsKeypoints, formatLabel } from '$lib/export/formats';
+  import { getExportData, getMergedCOCO, downloadFile, exportClassificationCSV, getClassificationCSVContent, exportUnetMask, formatDropsKeypoints, formatLabel, getYoloClassNames } from '$lib/export/formats';
   import { exportVisualImageDataUrl } from '$lib/export/visual-export';
   import { getSegExportFiles, getSegBatchFiles } from '$lib/export/segmentation-export';
   import { deleteImageMask } from '$lib/segmentation/store.svelte';
@@ -540,15 +540,15 @@
     }
   }
 
-  /** 导出前提醒：VOC / YOLO / CreateML 没有关键点概念，骨架会被丢掉。
+  /** 导出前提醒：VOC / CreateML 没有关键点概念，骨架会被丢掉。
    *  以前是**静默丢弃**的 —— 用户导完发现骨架没了，还以为是没标上。
-   *  要保留关键点请用 COCO 或 LabelMe。 */
+   *  YOLO 现在走 ultralytics pose 行，不再丢；要保留关键点也可以用 COCO / LabelMe。 */
   function warnIfDropsKeypoints(annsList: Annotation[][]) {
     if (!formatDropsKeypoints(ui.exportFormat)) return;
     const n = annsList.reduce((s, anns) => s + anns.filter(a => a.type === 'keypoint').length, 0);
     if (n > 0) {
       showToast(
-        `${formatLabel(ui.exportFormat)} 不支持关键点，${n} 个骨架不会写入文件（要保留请改用 COCO 或 LabelMe）`,
+        `${formatLabel(ui.exportFormat)} 不支持关键点，${n} 个骨架不会写入文件（要保留请改用 COCO / LabelMe / YOLO）`,
         'error'
       );
     }
@@ -565,6 +565,11 @@
   async function handleSegExportCurrent() {
     const name = images[ui.currentImageIndex]?.name;
     if (!name) { showToast('请先选择一张图片', 'error'); return; }
+    // 导出前先强制落盘：YOLO-seg 是重操作，万一渲染进程崩溃，未保存的掩膜不会跟着丢
+    if (!saveAnnotationsNow()) {
+      showToast('导出前保存失败：请先用「保存工程」落盘再导出', 'error');
+      return;
+    }
     const format = ui.segExportFormat as any;
     let files: Awaited<ReturnType<typeof getSegExportFiles>> = [];
     try {
@@ -594,6 +599,11 @@
   }
 
   async function handleSegBatchExport() {
+    // 同上：批量导出前先把当前掩膜落盘，避免重操作崩溃导致数据丢失
+    if (!saveAnnotationsNow()) {
+      showToast('导出前保存失败：请先用「保存工程」落盘再导出', 'error');
+      return;
+    }
     const format = ui.segExportFormat as any;
     let files: Awaited<ReturnType<typeof getSegBatchFiles>> = [];
     try {
@@ -793,7 +803,7 @@
           await writeOne(data.filename, textToBase64(data.content));
         }
         if (ui.exportFormat === 'yolo') {
-          await writeOne('classes.txt', textToBase64(classes.join('\n')));
+          await writeOne('classes.txt', textToBase64(getYoloClassNames().join('\n')));
         }
       }
 
@@ -886,7 +896,7 @@
           try {
             const cf = await dirHandle.getFileHandle('classes.txt', { create: true });
             const cw = await cf.createWritable();
-            await cw.write(classes.join('\n'));
+            await cw.write(getYoloClassNames().join('\n'));
             await cw.close();
           } catch {}
         }
@@ -909,7 +919,7 @@
       delay += 300;
     }
     if (ui.exportFormat === 'yolo') {
-      setTimeout(() => downloadFile('classes.txt', classes.join('\n'), 'text/plain'), delay);
+      setTimeout(() => downloadFile('classes.txt', getYoloClassNames().join('\n'), 'text/plain'), delay);
     }
     setTimeout(() => {
       showToast(`${t('exportComplete')}: ${getImagesWithAnnotations().length} ${t('exportedFiles')}`, 'success');

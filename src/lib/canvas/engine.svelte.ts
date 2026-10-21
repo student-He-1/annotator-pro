@@ -180,6 +180,35 @@ export function render() {
       ctx.drawImage(segOverlay, -hw, -hh, imgW, imgH);
       ctx.restore();
     }
+    // 区域拆分的预览线：白色虚线（松手才真正切）
+    const cut = ui.segSplitPreview;
+    if (cut) {
+      ctx.save();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2 / ui.zoom;
+      ctx.setLineDash([10 / ui.zoom, 6 / ui.zoom]);
+      ctx.beginPath();
+      ctx.moveTo(cut.x1 - hw, cut.y1 - hh);
+      ctx.lineTo(cut.x2 - hw, cut.y2 - hh);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // 框提示预览：青色虚线框（松手才请求后端）
+    const boxPrev = ui.segBoxPreview;
+    if (boxPrev) {
+      const bx = Math.min(boxPrev.x1, boxPrev.x2) - hw;
+      const by = Math.min(boxPrev.y1, boxPrev.y2) - hh;
+      const bw = Math.abs(boxPrev.x2 - boxPrev.x1);
+      const bh = Math.abs(boxPrev.y2 - boxPrev.y1);
+      ctx.save();
+      ctx.strokeStyle = '#39d2c0';
+      ctx.fillStyle = 'rgba(57,210,192,0.12)';
+      ctx.lineWidth = 2 / ui.zoom;
+      ctx.setLineDash([8 / ui.zoom, 4 / ui.zoom]);
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.restore();
+    }
     // 负点修正累积的提示点：白=正点（保留），红=负点（排除）
     const refinePts = getRefinePoints();
     if (refinePts.length > 0) {

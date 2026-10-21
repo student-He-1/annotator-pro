@@ -10,10 +10,11 @@ import { images, ui } from '../state.svelte';
 import { getImagesWithMasks, getMaskForExport, getImageMask } from '../segmentation/store.svelte';
 import type { ImageMask, MaskRegion } from '../segmentation/types';
 import { CITYSCAPES_TRAIN_ID } from '../segmentation/presets';
-import { regionStats, rleBinaryColMajor } from '../segmentation/rle';
+import { regionStats, rleBinaryColMajor, applyIndexRuns } from '../segmentation/rle';
+import { extractContour, simplifyPolygon } from '../magicwand';
 
 export type SegExportFormat =
-  | 'seg_coco' | 'seg_coco_merged' | 'seg_cityscapes' | 'seg_instances' | 'seg_unet';
+  | 'seg_coco' | 'seg_coco_merged' | 'seg_cityscapes' | 'seg_instances' | 'seg_unet' | 'seg_yolo';
 
 export interface SegExportFile {
   filename: string;
@@ -214,9 +215,15 @@ function buildCoco(names: string[]): { content: string; imageCount: number; annC
         categories.push({ id: catId, name: region.className, supercategory: 'none' });
         catIdOf.set(region.className, catId);
       }
-      const st = regionStats(map, mask.width, region.ordinal);
+      // 严格重叠：把被遮挡像素并回该实例（只有启用过严格模式、且这条区域确实被覆盖时才有）
+      let srcMap = map;
+      if (region.occluded) {
+        srcMap = map.slice();
+        applyIndexRuns(srcMap, region.occluded, region.ordinal);
+      }
+      const st = regionStats(srcMap, mask.width, region.ordinal);
       if (st.area === 0 || !st.box) continue;
-      const counts = rleBinaryColMajor(map, mask.width, mask.height, region.ordinal);
+      const counts = rleBinaryColMajor(srcMap, mask.width, mask.height, region.ordinal);
       outAnns.push({
         id: annId++,
         image_id: imageId,
@@ -302,6 +309,102 @@ async function instanceFiles(name: string, includeDetails: boolean): Promise<Seg
 }
 
 // ============================================================
+// YOLO 分割 TXT（mask → polygon）
+// ============================================================
+/** 分割模式的 YOLO 类别表 = `ui.segClasses` + 所有掩膜里出现过但没登记的类别。
+ *  批量导出的 classes.txt 与每张图的 txt 必须用**同一份顺序**，否则类别整体错位。 */
+export function segYoloClasses(): string[] {
+  const names = [...ui.segClasses];
+  const seen = new Set(names);
+  for (const e of getImagesWithMasks()) {
+    const mask = getImageMask(e.name);
+    for (const r of mask?.regions || []) {
+      if (!seen.has(r.className)) { seen.add(r.className); names.push(r.className); }
+    }
+  }
+  return names;
+}
+
+/** 一次扫描算出每个 ordinal 的包围盒，避免「每个区域都新建整图 buffer」。 */
+function regionBoundsOf(map: Uint8Array, W: number, H: number, maxOrdinal: number) {
+  const bounds: ({ x0: number; y0: number; x1: number; y1: number } | null)[] =
+    new Array(maxOrdinal + 1).fill(null);
+  for (let y = 0; y < H; y++) {
+    const row = y * W;
+    for (let x = 0; x < W; x++) {
+      const v = map[row + x];
+      if (!v) continue;
+      let b = bounds[v];
+      if (!b) {
+        bounds[v] = { x0: x, y0: y, x1: x, y1: y };
+      } else {
+        if (x < b.x0) b.x0 = x;
+        if (x > b.x1) b.x1 = x;
+        if (y < b.y0) b.y0 = y;
+        if (y > b.y1) b.y1 = y;
+      }
+    }
+  }
+  return bounds;
+}
+
+/** 一张图 → `class x1 y1 x2 y2 ...`（归一化多边形，ultralytics YOLO-seg 格式）。
+ *  轮廓复用魔术棒的 Moore 跟踪 + Douglas-Peucker；只取区域的主连通块。
+ *
+ *  性能：每个区域只在自身 bbox 内建 buffer（复用同一个），不再 new 整图 Uint8Array；
+ *  每 32 个区域让出一次主线程，避免大工程导出时渲染进程被卡死/白屏。 */
+async function yoloSegFile(imageName: string, classNames: string[]): Promise<SegExportFile | null> {
+  const got = getMaskForExport(imageName);
+  if (!got) return null;
+  const { mask, map } = got;
+  const W = mask.width, H = mask.height;
+  if (W <= 0 || H <= 0) return null;
+  const maxOrdinal = mask.regions.reduce((m, r) => Math.max(m, r.ordinal), 0);
+  const bounds = regionBoundsOf(map, W, H, maxOrdinal);
+  let bin = new Uint8Array(0);
+  let binCap = 0;
+  let processed = 0;
+  const lines: string[] = [];
+
+  for (const region of mask.regions) {
+    if (region.hidden) continue;
+    const classIdx = classNames.indexOf(region.className);
+    if (classIdx < 0) continue;
+    const b = bounds[region.ordinal];
+    if (!b) continue;
+    const bw = b.x1 - b.x0 + 1;
+    const bh = b.y1 - b.y0 + 1;
+    const need = bw * bh;
+    if (need > binCap) {
+      bin = new Uint8Array(need);
+      binCap = need;
+    } else {
+      bin.fill(0, 0, need);
+    }
+    for (let y = 0; y < bh; y++) {
+      const src = (b.y0 + y) * W + b.x0;
+      const dst = y * bw;
+      for (let x = 0; x < bw; x++) if (map[src + x] === region.ordinal) bin[dst + x] = 1;
+    }
+    const contour = extractContour(bin, bw, bh);
+    if (contour.length < 3) continue;
+    const simplified = simplifyPolygon(contour, 1.5);
+    if (simplified.length < 3) continue;
+    lines.push(
+      `${classIdx} ` +
+      simplified.map(p => `${((p.x + b.x0) / W).toFixed(6)} ${((p.y + b.y0) / H).toFixed(6)}`).join(' ')
+    );
+    if ((++processed & 31) === 0) await new Promise(r => setTimeout(r, 0));
+  }
+
+  return {
+    filename: `${baseName(imageName)}.txt`,
+    content: lines.length > 0 ? lines.join('\n') + '\n' : '',
+    mimeType: 'text/plain',
+  };
+}
+
+// ============================================================
 // 对外：单图 / 批量
 // ============================================================
 export async function getSegExportFiles(imageName: string, format: SegExportFormat): Promise<SegExportFile[]> {
@@ -335,6 +438,10 @@ export async function getSegExportFiles(imageName: string, format: SegExportForm
       // 单图「另存为」只能落一个文件 → 只出索引图；逐实例 PNG + 清单走批量
       return instanceFiles(imageName, false);
     }
+    case 'seg_yolo': {
+      const f = await yoloSegFile(imageName, segYoloClasses());
+      return f ? [f] : [];
+    }
     default:
       return [];
   }
@@ -351,6 +458,21 @@ export async function getSegBatchFiles(format: SegExportFormat): Promise<SegExpo
     case 'seg_instances': {
       const out: SegExportFile[] = [];
       for (const name of names) out.push(...(await instanceFiles(name, true)));
+      return out;
+    }
+    case 'seg_yolo': {
+      const out: SegExportFile[] = [];
+      const classNames = segYoloClasses();
+      for (const name of names) {
+        const f = await yoloSegFile(name, classNames);
+        if (f) out.push(f);
+        await new Promise(r => setTimeout(r, 0));
+      }
+      out.push({
+        filename: 'classes.txt',
+        content: classNames.join('\n') + '\n',
+        mimeType: 'text/plain',
+      });
       return out;
     }
     case 'seg_coco':
@@ -372,6 +494,7 @@ export const SEG_EXPORT_FORMATS: { value: SegExportFormat; label: string }[] = [
   { value: 'seg_cityscapes', label: 'Cityscapes 语义 PNG（trainId）' },
   { value: 'seg_instances', label: '实例掩膜 PNG（索引图+逐实例）' },
   { value: 'seg_unet', label: 'U-Net Mask PNG' },
+  { value: 'seg_yolo', label: 'YOLO 分割 TXT（mask→polygon，每图一个）' },
 ];
 
 /** 统计一句话，导出前给用户看。

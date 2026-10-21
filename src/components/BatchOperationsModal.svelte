@@ -182,8 +182,8 @@
   }
 </script>
 
-<div class="modal-overlay" onclick={onClose}>
-  <div class="modal" onclick={e => e.stopPropagation()}>
+<div class="modal-overlay" role="presentation" onclick={onClose}>
+  <div class="modal" role="presentation" onclick={e => e.stopPropagation()}>
     <div class="modal-header">
       <h3>批量操作</h3>
       <button class="close-btn" onclick={onClose}>×</button>
@@ -217,8 +217,8 @@
         {#if ui.workMode === 'classification'}
           <div class="tab-content">
             <div class="form-row">
-              <label>选择标签</label>
-              <select bind:value={batchLabel}>
+              <label for="batch-label">选择标签</label>
+              <select id="batch-label" bind:value={batchLabel}>
                 <option value="">选择类别...</option>
                 {#each classes as cls}
                   <option value={cls}>{cls}</option>
@@ -226,7 +226,7 @@
               </select>
             </div>
             <div class="form-row">
-              <label>图片范围</label>
+              <span>图片范围</span>
               <div style="display:flex;gap:8px;align-items:center">
                 <span>第</span>
                 <input type="number" bind:value={rangeStart} min="1" max={images.length} style="width:60px" />
@@ -240,8 +240,8 @@
         {:else}
           <div class="tab-content">
             <div class="form-row">
-              <label>原类别</label>
-              <select bind:value={changeOldClass}>
+              <label for="batch-old-class">原类别</label>
+              <select id="batch-old-class" bind:value={changeOldClass}>
                 <option value="">选择类别...</option>
                 {#each classes as cls}
                   <option value={cls}>{cls}</option>
@@ -249,8 +249,8 @@
               </select>
             </div>
             <div class="form-row">
-              <label>新类别</label>
-              <select bind:value={changeNewClass}>
+              <label for="batch-new-class">新类别</label>
+              <select id="batch-new-class" bind:value={changeNewClass}>
                 <option value="">选择类别...</option>
                 {#each classes as cls}
                   <option value={cls}>{cls}</option>
@@ -258,7 +258,7 @@
               </select>
             </div>
             <div class="form-row">
-              <label>操作范围</label>
+              <span>操作范围</span>
               <div class="radio-group">
                 <label class="radio">
                   <input type="radio" bind:group={changeScope} value="all" />
@@ -276,7 +276,7 @@
             </div>
             {#if changeScope === 'range'}
               <div class="form-row">
-                <label>图片范围</label>
+                <span>图片范围</span>
                 <div style="display:flex;gap:8px;align-items:center">
                   <span>第</span>
                   <input type="number" bind:value={rangeStart} min="1" max={images.length} style="width:60px" />
@@ -296,8 +296,8 @@
         {#if ui.workMode === 'classification'}
           <div class="tab-content">
             <div class="form-row">
-              <label>删除标签</label>
-              <select bind:value={deleteClass}>
+              <label for="batch-del-label">删除标签</label>
+              <select id="batch-del-label" bind:value={deleteClass}>
                 <option value="">选择类别...</option>
                 {#each classes as cls}
                   <option value={cls}>{cls}</option>
@@ -306,7 +306,7 @@
             </div>
             {#if labelRanges.length > 0}
               <div class="form-row">
-                <label>已打标范围（自动识别）</label>
+                <span>已打标范围（自动识别）</span>
                 <div style="display:flex;flex-direction:column;gap:4px">
                   {#each labelRanges as r}
                     <button class="range-btn" onclick={() => { rangeStart = r.start; rangeEnd = r.end; deleteClass = r.label; }}>
@@ -317,7 +317,7 @@
               </div>
             {/if}
             <div class="form-row">
-              <label>图片范围（手动选择）</label>
+              <span>图片范围（手动选择）</span>
               <div style="display:flex;gap:8px;align-items:center">
                 <span>第</span>
                 <input type="number" bind:value={rangeStart} min="1" max={images.length} style="width:60px" />
@@ -341,8 +341,8 @@
             </div>
             {#if !deleteAll}
               <div class="form-row">
-                <label>删除类别</label>
-                <select bind:value={deleteClass}>
+                <label for="batch-del-class">删除类别</label>
+                <select id="batch-del-class" bind:value={deleteClass}>
                   <option value="">选择类别...</option>
                   {#each classes as cls}
                     <option value={cls}>{cls}</option>
@@ -351,7 +351,7 @@
               </div>
             {/if}
             <div class="form-row">
-              <label>操作范围</label>
+              <span>操作范围</span>
               <div class="radio-group">
                 <label class="radio">
                   <input type="radio" bind:group={deleteScope} value="all" />
@@ -369,7 +369,7 @@
             </div>
             {#if deleteScope === 'range'}
               <div class="form-row">
-                <label>图片范围</label>
+                <span>图片范围</span>
                 <div style="display:flex;gap:8px;align-items:center">
                   <span>第</span>
                   <input type="number" bind:value={rangeStart} min="1" max={images.length} style="width:60px" />
@@ -446,7 +446,7 @@
   .form-row {
     display: flex; flex-direction: column; gap: 6px;
   }
-  .form-row > label {
+  .form-row > label, .form-row > span {
     font-size: 12px; color: var(--text-secondary); font-weight: 500;
   }
   .form-row select, .form-row input {

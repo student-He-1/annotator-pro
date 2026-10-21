@@ -13,7 +13,8 @@
     canUndoMask, canRedoMask, undoMask, redoMask, getMaskDirty, getImageMask,
     runClassSweep, cancelClassSweep, toggleSweepClass, selectAllSweepClasses, clearSweepClasses,
     reviewSweepClass, cleanupSmallIslands, getRefinePoints, clearRefinePoints,
-    runBatchSweep, setHoverCandidate,
+    runBatchSweep, setHoverCandidate, measureCandidateOverlap,
+    filterSmallCandidates, deleteSmallRegions, getImagesWithMasks,
   } from '$lib/segmentation/store.svelte';
   import { SEG_PRESETS } from '$lib/segmentation/presets';
   import { describeMasks, getUnmappedCityscapesClasses, SEG_EXPORT_FORMATS } from '$lib/export/segmentation-export';
@@ -105,14 +106,40 @@
     }
   }
 
+  /** 重叠检测：接受前先算会盖掉多少已有区域，确认后再写（单索引图的覆盖语义）。
+   *  ks 不传 = 全部候选。 */
+  function confirmOverlap(ks?: number[]): boolean {
+    const ov = measureCandidateOverlap(curName, ks);
+    if (ov.px === 0) return true;
+    return confirm(
+      `本次接受会覆盖已有区域的 ${ov.px.toLocaleString()} 个像素（涉及 ${ov.regions} 个区域）。\n\n` +
+      `单索引图里后接受的区域会盖住前面的；继续吗？`
+    );
+  }
+
   function doAccept(k: number, className: string, kind: 'instance' | 'stuff') {
+    if (!confirmOverlap([k])) return;
     acceptCandidate(k, className, kind);
     render();
   }
 
   function doAcceptAll() {
+    if (!confirmOverlap()) return;
     acceptAllCandidates();
     render();
+  }
+
+  function doFilterCandidates() {
+    const n = filterSmallCandidates(Number(ui.segMinAreaPx) || 0);
+    if (n > 0) render();
+  }
+
+  function doDeleteSmallRegions() {
+    if (regions.length === 0) return;
+    const min = Number(ui.segMinAreaPx) || 0;
+    if (min <= 0) { showToast('请先填写面积阈值（px）', 'info'); return; }
+    if (!confirm(`确定删除当前图中面积小于 ${min} px 的区域吗？可用撤销恢复。`)) return;
+    if (deleteSmallRegions(min) > 0) render();
   }
 
   function doDiscard(k: number) {
@@ -198,8 +225,8 @@
       <input class="text-input" type="text" placeholder="任意英文词，如 car / road / sidewalk"
         bind:value={ui.segText} onkeydown={onPromptKey} />
       <div class="row-line">
-        <label class="tiny">阈值</label>
-        <input class="num-input" type="number" step="0.05" min="0.05" max="0.95" bind:value={ui.segConfThreshold} />
+        <label class="tiny" for="seg-conf">阈值</label>
+        <input id="seg-conf" class="num-input" type="number" step="0.05" min="0.05" max="0.95" bind:value={ui.segConfThreshold} />
         <span class="muted tiny">一次编码可反复换词，每个词几十毫秒</span>
       </div>
       <div class="chips">
@@ -228,8 +255,8 @@
         {/each}
       </div>
       <div class="row-line">
-        <label class="tiny">自动接受 ≥</label>
-        <input class="num-input" type="number" step="0.05" min="0.05" max="0.99" bind:value={ui.segSweepAutoAccept} />
+        <label class="tiny" for="seg-auto-accept">自动接受 ≥</label>
+        <input id="seg-auto-accept" class="num-input" type="number" step="0.05" min="0.05" max="0.99" bind:value={ui.segSweepAutoAccept} />
         <span class="muted tiny">（低于它、且高于上面的请求阈值 → 待复核）</span>
       </div>
       {#if ui.segSweepRunning}
@@ -288,7 +315,7 @@
         </div>
         <div class="list">
           {#each cands as c (c.k)}
-            <div class="item cand" title="鼠标停在行上会在画布上提亮这个候选"
+            <div class="item cand" role="listitem" title="鼠标停在行上会在画布上提亮这个候选"
               onmouseenter={() => { setHoverCandidate(c.k); render(); }}
               onmouseleave={() => { setHoverCandidate(0); render(); }}>
               <span class="idx">#{c.k}</span>
@@ -318,7 +345,9 @@
       {:else}
         <div class="list">
           {#each regions as r (r.ordinal)}
-            <div class="item region" class:sel={selected === r.ordinal} onclick={() => doRegionClick(r.ordinal)}>
+            <div class="item region" class:sel={selected === r.ordinal} role="button" tabindex="0"
+              onclick={() => doRegionClick(r.ordinal)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); doRegionClick(r.ordinal); } }}>
               <span class="swatch" style="background:{colorOf(r.className)}"></span>
               <span class="idx">{r.ordinal}</span>
               <select class="cls-select" value={r.className}
@@ -350,8 +379,8 @@
     <div class="section">
       <h4>修正</h4>
       <div class="row-line">
-        <label class="tiny">笔刷</label>
-        <input type="range" min="2" max="120" step="1" bind:value={ui.segBrushSize} />
+        <label class="tiny" for="seg-brush-size">笔刷</label>
+        <input id="seg-brush-size" type="range" min="2" max="120" step="1" bind:value={ui.segBrushSize} />
         <span class="tiny">{ui.segBrushSize}px</span>
       </div>
       <p class="muted tiny">
@@ -359,11 +388,23 @@
         再没有就新建一个。一笔 = 一个 Ctrl+Z。
       </p>
       <div class="row-line">
-        <label class="tiny">清理孤岛 &lt;</label>
-        <input class="num-input" type="number" min="1" max="100000" bind:value={ui.segIslandMinPx} />
+        <label class="tiny" for="seg-island-min">清理孤岛 &lt;</label>
+        <input id="seg-island-min" class="num-input" type="number" min="1" max="100000" bind:value={ui.segIslandMinPx} />
         <span class="tiny">px</span>
         <button class="btn-mini" onclick={doCleanupIslands} disabled={regions.length === 0}>清理</button>
       </div>
+      <div class="row-line">
+        <span class="tiny">小目标 &lt;</span>
+        <input class="num-input" type="number" min="0" max="10000000" bind:value={ui.segMinAreaPx} />
+        <span class="tiny">px</span>
+        <button class="btn-mini" onclick={doFilterCandidates} disabled={cands.length === 0}
+          title="丢弃面积小于阈值的候选（可重新出候选）">过滤候选</button>
+        <button class="btn-mini" onclick={doDeleteSmallRegions} disabled={regions.length === 0}
+          title="删除面积小于阈值的已接受区域（可撤销）">清理区域</button>
+      </div>
+      <p class="muted tiny">
+        面积按像素统计（不是百分比），阈值填 0 视为关闭。清理区域整批只占一个 Ctrl+Z。
+      </p>
       <p class="muted tiny">
         负点修正(R)：先选中区域，点击=保留、Shift+点击=排除；提示点会显示在画布上（白点/红点）。
       </p>
@@ -374,6 +415,13 @@
         </div>
       {/if}
       <p class="muted tiny">选择(V) 下 Shift+点另一个区域 = 合并进当前选中的区域。</p>
+      <p class="muted tiny">
+        区域拆分(C)：先选中区域，再在画布上从区域一侧拉到另一侧；松手切成两块，
+        最大块保留原编号，其余按新区域处理（整次一个 Ctrl+Z）。
+      </p>
+      <p class="muted tiny">
+        框提示(X)：在目标外面拉一个框，SAM 只在框内抠掩膜；适合边界模糊或一簇同类物体。
+      </p>
     </div>
 
     <!-- 显示 -->
@@ -387,14 +435,18 @@
         <input type="checkbox" bind:checked={ui.segShowCandidate} onchange={() => render()} />
         <span class="tiny">显示候选</span>
       </label>
+      <label class="check-line" title="接受候选时额外记下被覆盖的像素；显示不变，只有 COCO 实例导出会把它们并回原实例。默认关闭。">
+        <input type="checkbox" bind:checked={ui.segStrictOverlap} />
+        <span class="tiny">严格重叠：保留被遮挡像素（COCO 导出用）</span>
+      </label>
       <div class="row-line">
-        <label class="tiny">不透明度</label>
-        <input type="range" min="0.1" max="1" step="0.05" bind:value={ui.segOverlayOpacity} oninput={() => render()} />
+        <label class="tiny" for="seg-overlay-opacity">不透明度</label>
+        <input id="seg-overlay-opacity" type="range" min="0.1" max="1" step="0.05" bind:value={ui.segOverlayOpacity} oninput={() => render()} />
         <span class="tiny">{Math.round(ui.segOverlayOpacity * 100)}%</span>
       </div>
       <div class="row-line">
-        <label class="tiny">着色</label>
-        <select bind:value={ui.segOverlayMode} onchange={() => render()}>
+        <label class="tiny" for="seg-overlay-mode">着色</label>
+        <select id="seg-overlay-mode" bind:value={ui.segOverlayMode} onchange={() => render()}>
           <option value="instance">按实例</option>
           <option value="class">按类别</option>
         </select>
@@ -434,7 +486,7 @@
       <p class="muted tiny">{describeMasks()}</p>
       <div class="row-line">
         <button class="btn-mini primary" onclick={props.onExportCurrent} disabled={regions.length === 0}>导出当前图</button>
-        <button class="btn-mini" onclick={props.onBatchExport} disabled={regions.length === 0 && (ui.maskTotal || 0) === 0}>批量导出</button>
+        <button class="btn-mini" onclick={props.onBatchExport} disabled={regions.length === 0 && getImagesWithMasks().length === 0}>批量导出</button>
       </div>
       {#if ui.segExportFormat === 'seg_instances'}
         <p class="muted tiny">单图「另存为」只能落一个文件 → 只写索引图；逐实例 PNG + 清单请用**批量导出**。</p>
@@ -447,6 +499,11 @@
         {/if}
       {:else if ui.segExportFormat === 'seg_unet'}
         <p class="muted tiny">单通道灰度，0=背景，k=类别表里的第 k 个（1-based）。</p>
+      {:else if ui.segExportFormat === 'seg_yolo'}
+        <p class="muted tiny">
+          每图一个 txt：<code>class x1 y1 x2 y2 …</code>（归一化多边形，ultralytics YOLO-seg）。
+          批量导出会额外写 classes.txt；每个区域只取主连通块。
+        </p>
       {/if}
     </div>
 
@@ -454,7 +511,8 @@
     <div class="section">
       <h4>快捷键</h4>
       <p class="muted tiny">
-        V 选择区域 · T 文本提示 · B 点提示（Shift = 负点）<br />
+        V 选择区域 · T 文本提示 · B 点提示（Shift = 负点）· X 框提示<br />
+        W 画笔 · E 橡皮 · R 负点修正 · C 区域拆分<br />
         Delete 删除选中区域 · Ctrl+Z / Ctrl+Y 掩膜撤销重做<br />
         滚轮缩放 · 中键或 Alt+拖 平移
       </p>

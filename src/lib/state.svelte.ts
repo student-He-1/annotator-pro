@@ -136,6 +136,14 @@ export const ui = $state({
   segRefinePoints: [] as { x: number; y: number; label: 0 | 1 }[],
   /** 清理孤岛：小于这个像素数的连通块会被删掉 */
   segIslandMinPx: 64,
+  /** 小目标过滤：面积小于这个像素数的候选/区域会被过滤（0 = 关闭） */
+  segMinAreaPx: 64,
+  /** 区域拆分时正在拉的线（图像坐标）；null = 没在画 */
+  segSplitPreview: null as { x1: number; y1: number; x2: number; y2: number } | null,
+  /** 框提示正在拖的框（图像坐标）；null = 没在拖 */
+  segBoxPreview: null as { x1: number; y1: number; x2: number; y2: number } | null,
+  /** 严格重叠：接受候选时把被覆盖的像素记到旧区域上（默认关闭，关闭时与旧行为完全一致） */
+  segStrictOverlap: false,
   shortcuts: {
     select: 'v', rect: 'r', polygon: 'p', rotated: 'o', keypoint: 'k',
     sam: 'm', magicwand: 'w',
@@ -507,14 +515,26 @@ export function showToast(msg: string, type: 'info' | 'success' | 'error' = 'inf
 // Persistence（防抖，避免频繁写 localStorage 阻塞 UI）
 // ============================================================
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/** 本轮连续改动的起点。防抖不能被无限重置，否则连续标注时可能一直不落盘。 */
+let saveFirstDirtyAt = 0;
+const SAVE_DEBOUNCE_MS = 500;
+const SAVE_MAX_WAIT_MS = 3000;
 
-/** 防抖保存（500ms 内的连续改动合成一次写盘）。`markModified()` 会自动调用它。 */
+/** 防抖保存（500ms 内的连续改动合成一次写盘），但最多拖 3 秒。
+ *  以前只有纯防抖：连续改掩膜会不断重置 500ms 计时器，渲染进程崩溃前可能一次都没保存。 */
 export function saveAnnotations() {
+  const now = Date.now();
+  if (!saveFirstDirtyAt) saveFirstDirtyAt = now;
+  if (now - saveFirstDirtyAt >= SAVE_MAX_WAIT_MS) {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    saveAnnotationsNow();
+    return;
+  }
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
     saveAnnotationsNow();
-  }, 500);
+  }, SAVE_DEBOUNCE_MS);
 }
 
 /** 立刻保存。返回是否真的写成功。
@@ -527,7 +547,12 @@ export function saveAnnotations() {
  */
 export function saveAnnotationsNow(): boolean {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-  const data = { annotations, classes, classColors, theme: ui.theme, imageLabels: ui.imageLabels, skeletonId: ui.skeletonId };
+  saveFirstDirtyAt = 0;
+  const data = {
+    annotations, classes, classColors, theme: ui.theme, imageLabels: ui.imageLabels, skeletonId: ui.skeletonId,
+    // 分割模式有自己独立的类别表：不写进来会导致「新增类别 → 重启 → 消失」
+    segClasses: ui.segClasses, segClassColors: ui.segClassColors,
+  };
   try {
     localStorage.setItem('annotator_data', JSON.stringify(data));
   } catch (e: any) {
@@ -557,6 +582,9 @@ export function loadSavedData() {
     if (data.imageLabels) ui.imageLabels = data.imageLabels;
     // 记住上次选的关键点骨架模板，否则重启后回到「无骨架」，手动打点又要重新选
     if (data.skeletonId) ui.skeletonId = data.skeletonId;
+    // 分割模式自己的类别表（检测/分类的 classes 在上面，互不影响）
+    if (Array.isArray(data.segClasses) && data.segClasses.length > 0) ui.segClasses = [...data.segClasses];
+    if (data.segClassColors) ui.segClassColors = { ...ui.segClassColors, ...data.segClassColors };
     // 不恢复图片列表（dataUrl 刷新后失效，留空壳反而导致重新导入逻辑混乱；标注和文件名对应关系已保留，重新导入同名文件夹后自动匹配）
   } catch {}
   // 分割掩膜也从本地缓存恢复（和 annotations 同一套「按文件名匹配」的语义）

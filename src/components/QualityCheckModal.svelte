@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { t } from '$lib/i18n.svelte';
   import { runQualityCheck, DEFAULT_QUALITY_CONFIG } from '$lib/quality';
   import { showToast, ui } from '$lib/state.svelte';
@@ -64,7 +64,7 @@
   };
 </script>
 
-<div class="modal-backdrop" onclick={handleBackdropClick}>
+<div class="modal-backdrop" role="presentation" onclick={handleBackdropClick}>
   <div class="modal">
     <div class="modal-header">
       <h3>标注质量校验</h3>
@@ -97,12 +97,12 @@
           </label>
         </div>
         <div class="param-row">
-          <label>最小框尺寸 (px)</label>
-          <input type="number" bind:value={minBoxSize} min="1" />
+          <label for="qc-min-box">最小框尺寸 (px)</label>
+          <input id="qc-min-box" type="number" bind:value={minBoxSize} min="1" />
         </div>
         <div class="param-row">
-          <label>重叠IoU阈值</label>
-          <input type="number" bind:value={overlapThreshold} min="0" max="1" step="0.05" />
+          <label for="qc-overlap">重叠IoU阈值</label>
+          <input id="qc-overlap" type="number" bind:value={overlapThreshold} min="0" max="1" step="0.05" />
         </div>
       </div>
 

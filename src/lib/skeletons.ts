@@ -175,6 +175,26 @@ export function deleteCustomSkeleton(id: string) {
   saveCustom();
 }
 
+/** 合并工程文件里带的自定义模板定义。
+ *  换机器打开工程时本机没有这些模板，关键点会退化成「按点数猜」。
+ *  规则：**本机已有同 id 的优先**（不覆盖），内置模板也不会被顶替；
+ *  只补齐本机缺失的、结构完整的模板，落盘一次，返回新增数量。 */
+export function mergeCustomSkeletons(tpls: SkeletonTemplate[]): number {
+  const existing = new Set(customSkeletons.map(s => s.id));
+  const builtin = new Set(BUILTIN_SKELETONS.map(s => s.id));
+  const incoming = tpls.filter(t =>
+    !!t && typeof t.id === 'string' && t.id !== '' &&
+    typeof t.name === 'string' &&
+    Array.isArray(t.keypoints) && Array.isArray(t.skeleton) &&
+    !existing.has(t.id) && !builtin.has(t.id)
+  );
+  if (incoming.length === 0) return 0;
+  // 深拷贝，避免工程对象与 store 共享引用
+  customSkeletons = [...customSkeletons, ...JSON.parse(JSON.stringify(incoming))];
+  saveCustom();
+  return incoming.length;
+}
+
 /** 保存/更新自定义模板 */
 export function upsertCustomSkeleton(tpl: SkeletonTemplate) {
   const idx = customSkeletons.findIndex(s => s.id === tpl.id);
