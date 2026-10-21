@@ -10,6 +10,19 @@
   }
   let { onClose }: Props = $props();
 
+  const REPO_URL = 'https://github.com/student-He-1/annotator-pro';
+  const HOME_URL = 'https://github.com/student-He-1';
+
+  /** Tauri 里用系统浏览器打开；浏览器 dev 退回 window.open。 */
+  async function openExternal(url: string) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('open_external_url', { url });
+    } catch {
+      try { window.open(url, '_blank', 'noopener,noreferrer'); } catch { /* 忽略 */ }
+    }
+  }
+
   const shortcutNames: Record<string, string> = {
     select: 'selectTool', rect: 'rectTool', polygon: 'polygonTool',
     rotated: 'rotatedTool', keypoint: 'keypointTool',
@@ -149,6 +162,45 @@
       {/each}
     </div>
 
+    <div class="section about-section">
+      <h4>关于</h4>
+      <div class="about-card">
+        <div class="about-head">
+          <span class="about-name">Annotator Pro</span>
+          <span class="about-ver">v2.1.0</span>
+        </div>
+        <p class="about-desc">
+          本地运行的图像标注工具，面向目标检测、图像分类和图像分割。
+          桌面端 Tauri 2 + Svelte 5，AI 推理由本地 SAM3 / YOLO 提供；全程离线，不上传图片或标注。
+        </p>
+        <div class="about-meta">
+          <span>Tauri 2</span><span>Svelte 5</span><span>SAM3</span><span>YOLO</span><span>ONNX Runtime</span>
+        </div>
+        <div class="about-author">
+          <div><strong>作者</strong>student-He-1（个人开发者）</div>
+          <div><strong>方向</strong>计算机视觉 · 嵌入式 AI · 端侧推理</div>
+        </div>
+        <div class="about-urls">
+          <div>
+            <span>仓库</span>
+            <a href={REPO_URL} onclick={(e) => { e.preventDefault(); void openExternal(REPO_URL); }}>{REPO_URL}</a>
+          </div>
+          <div>
+            <span>主页</span>
+            <a href={HOME_URL} onclick={(e) => { e.preventDefault(); void openExternal(HOME_URL); }}>{HOME_URL}</a>
+          </div>
+        </div>
+        <p class="about-note">如果这个工具帮到了你，欢迎在 GitHub 点一个 Star。</p>
+        <p class="about-disclaimer">
+          <strong>免责声明</strong><br />
+          本软件为个人开发者作品，依赖业余时间维护，可能存在尚未发现的问题或缺陷。
+          请在重要数据上谨慎使用，不要直接用于高风险或不可逆的生产场景；
+          标注完成后请及时「保存工程」并自行备份。
+          因使用本软件造成的数据丢失或其它损失，作者不承担赔偿责任。
+        </p>
+      </div>
+    </div>
+
     <div class="actions">
       <button class="btn-sm" onclick={resetShortcuts}>{t('reset')}</button>
       <button class="btn-sm btn-primary" onclick={onClose}>{t('save')}</button>
@@ -216,4 +268,34 @@
   }
   .ce-count { color: var(--text-muted); }
   .ce-del { background: none; border: none; color: #f85149; cursor: pointer; font-size: 11px; }
+
+  .about-card {
+    padding: 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px;
+  }
+  .about-head { display: flex; align-items: baseline; gap: 8px; }
+  .about-name { font-size: 15px; font-weight: 700; letter-spacing: 0.02em; color: var(--text-primary); }
+  .about-ver {
+    font-size: 10px; color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.35);
+    padding: 1px 7px; border-radius: 999px;
+  }
+  .about-desc { margin: 8px 0; font-size: 12px; line-height: 1.65; color: var(--text-secondary); }
+  .about-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .about-meta span {
+    font-size: 10px; padding: 2px 7px; background: var(--bg-tertiary);
+    border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted);
+  }
+  .about-author { font-size: 11px; line-height: 1.8; color: var(--text-secondary); }
+  .about-author strong { color: var(--text-muted); font-weight: 500; margin-right: 8px; }
+  .about-urls { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; font-size: 11px; }
+  .about-urls div { display: flex; gap: 8px; align-items: baseline; }
+  .about-urls span { color: var(--text-muted); min-width: 32px; }
+  .about-urls a { color: #58a6ff; text-decoration: none; word-break: break-all; }
+  .about-urls a:hover { text-decoration: underline; }
+  .about-note { margin: 8px 0 0; font-size: 10px; color: var(--text-muted); }
+  .about-disclaimer {
+    margin: 10px 0 0; padding: 10px 12px; border-radius: 6px;
+    background: rgba(210, 153, 29, 0.08); border: 1px solid rgba(210, 153, 29, 0.35);
+    font-size: 10.5px; line-height: 1.7; color: #d2991d;
+  }
+  .about-disclaimer strong { color: #e3b341; }
 </style>

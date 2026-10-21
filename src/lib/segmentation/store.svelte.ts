@@ -15,7 +15,7 @@ import {
 } from './rle';
 import { buildOverlayCanvas } from './overlay';
 import { pcsWithMask, predictWithPoints, predictWithBox, clearSegSamCache, connectSegBackend, isSegMaskSupported, isSegBoxSupported, isSegServerReady } from './samMask';
-import type { ImageMask, MaskCandidate, MaskRegion, MaskRegionKind, ProjectMask, SegmentationSettings, SegSweepResult } from './types';
+import type { ImageMask, MaskBox, MaskCandidate, MaskRegion, MaskRegionKind, ProjectMask, ReviewQueueItem, ReviewQueueMeta, SegmentationSettings, SegSweepResult } from './types';
 
 const MAX_MASK_HISTORY = 30;
 const MAX_DECODED = 2;
@@ -43,6 +43,177 @@ let candMap: Uint8Array | null = null;
 let candW = 0;
 let candH = 0;
 const hiddenCandidates = new Set<number>();
+
+// ============================================================
+// 跨图复核队列（A2）
+// ============================================================
+// 只存候选二值掩膜的 RLE，不存整图 map；复核时切到对应图片，把该项挂成普通候选，
+// 后面的 ✓/Enter 接受、✕/Backspace 丢弃、重叠确认全部复用现有链路。
+const MAX_REVIEW_QUEUE = 300;
+let reviewQueue: ReviewQueueItem[] = [];
+let reviewQueueFullWarned = false;
+/** 切图过程中暂存：onImageSwitched 清完候选后再把它挂上 */
+let pendingReviewPreview: ReviewQueueItem | null = null;
+
+function reviewSignature(
+  imageName: string,
+  className: string,
+  score: number,
+  box: MaskBox | undefined,
+  area: number,
+): string {
+  const b = box ? `${box.x1},${box.y1},${box.x2},${box.y2}` : '';
+  return `${imageName}|${className}|${score.toFixed(4)}|${b}|${area}`;
+}
+
+function removeReviewItemBySignature(
+  imageName: string,
+  className: string,
+  score: number,
+  box: MaskBox | undefined,
+  area: number,
+) {
+  const id = reviewSignature(imageName, className, score, box, area);
+  const before = reviewQueue.length;
+  reviewQueue = reviewQueue.filter(it => it.id !== id);
+  if (ui.segReviewActiveId === id) ui.segReviewActiveId = '';
+  if (reviewQueue.length !== before) bump();
+}
+
+function queueReviewCandidate(
+  imageName: string,
+  className: string,
+  kind: MaskRegionKind,
+  score: number,
+  area: number,
+  box: MaskBox | undefined,
+  width: number,
+  height: number,
+  map: Uint8Array,
+  k: number,
+) {
+  if (reviewQueue.length >= MAX_REVIEW_QUEUE) {
+    if (!reviewQueueFullWarned) {
+      reviewQueueFullWarned = true;
+      showToast(`复核队列已达上限 ${MAX_REVIEW_QUEUE}，请先处理一些再继续`, 'info');
+    }
+    return;
+  }
+  const id = reviewSignature(imageName, className, score, box, area);
+  if (reviewQueue.some(it => it.id === id)) return;
+
+  // 只压这个候选 bbox 内的二值掩膜：小目标几十×几十，不会像 YOLO-seg 那样
+  // 每个候选都 new 一张整图 buffer；大 target 最多一张 bbox 大小的临时数组。
+  let x0 = 0, y0 = 0, bw = width, bh = height;
+  if (box) {
+    x0 = Math.max(0, Math.floor(box.x1) - 1);
+    y0 = Math.max(0, Math.floor(box.y1) - 1);
+    const x1 = Math.min(width, Math.ceil(box.x2) + 1);
+    const y1 = Math.min(height, Math.ceil(box.y2) + 1);
+    bw = x1 - x0;
+    bh = y1 - y0;
+  }
+  if (bw <= 0 || bh <= 0) return;
+
+  const bin = new Uint8Array(bw * bh);
+  for (let y = 0; y < bh; y++) {
+    const src = (y0 + y) * width + x0;
+    const dst = y * bw;
+    for (let x = 0; x < bw; x++) if (map[src + x] === k) bin[dst + x] = 1;
+  }
+  const enc = encodeRuns(bin);
+  reviewQueue.push({ id, imageName, className, kind, score, area, box, width, height, x0, y0, bw, bh, counts: enc.counts, ids: enc.ids });
+  bump();
+}
+
+/** 面板展示：按分数从低到高（最不确定的优先） */
+export function getReviewQueue(): ReviewQueueMeta[] {
+  ui.maskRev;
+  return reviewQueue
+    .map(it => ({
+      id: it.id, imageName: it.imageName, className: it.className, kind: it.kind,
+      score: it.score, area: it.area, box: it.box, width: it.width, height: it.height,
+      x0: it.x0, y0: it.y0, bw: it.bw, bh: it.bh,
+    }))
+    .sort((a, b) => a.score - b.score);
+}
+
+function applyReviewPreview(item: ReviewQueueItem) {
+  const local = decodeRuns(item.counts, item.ids, item.bw * item.bh);
+  // 还原成整图候选 map：bbox 外的像素保持 0
+  const map = new Uint8Array(item.width * item.height);
+  for (let y = 0; y < item.bh; y++) {
+    const dst = (item.y0 + y) * item.width + item.x0;
+    const src = y * item.bw;
+    for (let x = 0; x < item.bw; x++) if (local[src + x]) map[dst + x] = 1;
+  }
+  candidates = [{ k: 1, className: item.className, kind: item.kind, score: item.score, box: item.box, area: item.area }];
+  hiddenCandidates.clear();
+  candMap = map;
+  candW = item.width;
+  candH = item.height;
+  ui.segReviewActiveId = item.id;
+  bump();
+}
+
+/** 复核某一项：切到对应图片并把它挂成当前候选（同一张图则直接挂） */
+export function previewReviewItem(id: string): boolean {
+  const item = reviewQueue.find(it => it.id === id);
+  if (!item) return false;
+  const idx = images.findIndex(img => img.name === item.imageName);
+  if (idx < 0) {
+    showToast('这张图已经不在当前图片列表里，无法复核', 'error');
+    return false;
+  }
+  if (idx === ui.currentImageIndex) {
+    applyReviewPreview(item);
+    return true;
+  }
+  pendingReviewPreview = item;
+  ui.currentImageIndex = idx;
+  return true;
+}
+
+/** 下一项：当前项之后的下一条；没有当前项时取最低分那条 */
+export function nextReviewItem(): boolean {
+  const sorted = reviewQueue.slice().sort((a, b) => a.score - b.score);
+  if (sorted.length === 0) return false;
+  const idx = sorted.findIndex(it => it.id === ui.segReviewActiveId);
+  const next = sorted[idx >= 0 && idx + 1 < sorted.length ? idx + 1 : 0];
+  return previewReviewItem(next.id);
+}
+
+/** 直接从队列丢弃某一项（不需要先复核） */
+export function discardReviewItem(id: string) {
+  const before = reviewQueue.length;
+  reviewQueue = reviewQueue.filter(it => it.id !== id);
+  if (ui.segReviewActiveId === id) {
+    ui.segReviewActiveId = '';
+    candidates = [];
+    candMap = null;
+    candW = 0;
+    candH = 0;
+    hiddenCandidates.clear();
+  }
+  if (reviewQueue.length !== before) bump();
+}
+
+/** 清空队列；如果当前正在复核，预览候选也一并清掉 */
+export function clearReviewQueue() {
+  const hadActive = !!ui.segReviewActiveId;
+  reviewQueue = [];
+  reviewQueueFullWarned = false;
+  pendingReviewPreview = null;
+  ui.segReviewActiveId = '';
+  if (hadActive) {
+    candidates = [];
+    candMap = null;
+    candW = 0;
+    candH = 0;
+    hiddenCandidates.clear();
+  }
+  bump();
+}
 
 // ============================================================
 // 独立撤销栈（绝不和检测模式的 ui.history 混用）
@@ -466,25 +637,37 @@ export async function runBoxPrompt(
 }
 
 export function discardCandidate(k: number) {
-  hiddenCandidates.add(k);
-  candidates = candidates.filter(c => c.k !== k);
+  discardCandidateSilent(k);
   bump();
 }
 
 export function discardAllCandidates() {
-  for (const c of candidates) hiddenCandidates.add(c.k);
+  const name = currentName();
+  for (const c of candidates) {
+    removeReviewItemBySignature(name, c.className, c.score, c.box, c.area);
+    hiddenCandidates.add(c.k);
+  }
   candidates = [];
   candMap = null;
+  ui.segReviewActiveId = '';
   bump();
 }
 
 export function clearCandidates() {
-  if (candidates.length === 0 && !candMap) return;
+  if (candidates.length === 0 && !candMap) {
+    // 只取消了「复核预览」这种情况：队列项本身保留，调用方可以再次复核
+    if (ui.segReviewActiveId) {
+      ui.segReviewActiveId = '';
+      bump();
+    }
+    return;
+  }
   candidates = [];
   candMap = null;
   hiddenCandidates.clear();
   candW = 0;
   candH = 0;
+  ui.segReviewActiveId = '';
   bump();
 }
 
@@ -659,8 +842,11 @@ export function filterSmallCandidates(minPx: number): number {
 }
 
 function discardCandidateSilent(k: number) {
+  const c = candidates.find(x => x.k === k);
   hiddenCandidates.add(k);
   candidates = candidates.filter(c => c.k !== k);
+  // 如果这个候选来自跨图复核队列，同步把对应队列项移除
+  if (c) removeReviewItemBySignature(currentName(), c.className, c.score, c.box, c.area);
 }
 
 function discardCandidateSilentCleanup() {
@@ -987,6 +1173,16 @@ export function onImageSwitched() {
   ui.segBatchTotal = 0;
   ui.segBatchCurrent = '';
   ui.segHoverCandidate = 0;
+
+  // 这次切图如果是「复核队列」触发的，清完旧候选后把目标项挂回来
+  if (pendingReviewPreview && pendingReviewPreview.imageName === currentName()) {
+    const item = pendingReviewPreview;
+    pendingReviewPreview = null;
+    applyReviewPreview(item);
+  } else {
+    pendingReviewPreview = null;
+    ui.segReviewActiveId = '';
+  }
 }
 
 /** 候选 hover 预览（面板 onmouseenter/leave 调用） */
@@ -1064,7 +1260,24 @@ async function sweepOneWord(
       return { result: { className: cls, total: 0, accepted: 0, review: 0, elapsedMs: elapsed() }, accepted: 0, checkpointed: false };
     }
     const areaLut = new Uint32Array(256);
-    for (let i = 0; i < res.map.length; i++) { const v = res.map[i]; if (v) areaLut[v]++; }
+    // 复核队列要存 bbox 内的 RLE：顺手在这一遍里算每个候选的真实包围盒，
+    // 不信任 SAM 返回的 box（它可能是闭区间/半开区间，边界上容易少切一个像素）。
+    const minX = new Int32Array(256).fill(res.width);
+    const minY = new Int32Array(256).fill(res.height);
+    const maxX = new Int32Array(256).fill(-1);
+    const maxY = new Int32Array(256).fill(-1);
+    for (let i = 0; i < res.map.length; i++) {
+      const v: number = res.map[i];
+      if (!v) continue;
+      const kk = v & 255;
+      areaLut[kk]++;
+      const y = (i / res.width) | 0;
+      const x = i - y * res.width;
+      if (x < minX[kk]) minX[kk] = x;
+      if (x > maxX[kk]) maxX[kk] = x;
+      if (y < minY[kk]) minY[kk] = y;
+      if (y > maxY[kk]) maxY[kk] = y;
+    }
 
     const auto: CandidateItem[] = [];
     let review = 0;
@@ -1076,10 +1289,13 @@ async function sweepOneWord(
       const area = areaLut[k] || 0;
       if (!area) continue;
       const inst = res.instances[i];
+      const bb = { x1: minX[k], y1: minY[k], x2: maxX[k] + 1, y2: maxY[k] + 1 };
       if (inst.score >= ui.segSweepAutoAccept) {
-        auto.push({ k, className: cls, kind: presetKindOf(cls), score: inst.score, box: inst.box, area });
+        auto.push({ k, className: cls, kind: presetKindOf(cls), score: inst.score, box: bb, area });
       } else {
         review++;
+        // 中间分候选进跨图复核队列（只存该候选 bbox 内的二值 RLE）
+        queueReviewCandidate(name, cls, presetKindOf(cls), inst.score, area, bb, res.width, res.height, res.map, k);
       }
     }
 
@@ -1090,7 +1306,12 @@ async function sweepOneWord(
         checkpoint: allowCheckpoint,
         silent: true,
       });
-      if (added) { accepted = added; checkpointed = allowCheckpoint; }
+      if (added) {
+        accepted = added;
+        checkpointed = allowCheckpoint;
+        // 这些候选已经是正式区域了；旧队列里若有同名项，一并移除避免重复接受
+        for (const it of auto) removeReviewItemBySignature(name, it.className, it.score, it.box, it.area || 0);
+      }
     }
     return {
       result: { className: cls, total: auto.length + review, accepted, review, elapsedMs: elapsed() },
@@ -1180,6 +1401,9 @@ export async function runBatchSweep(onProgress?: () => void): Promise<void> {
   const targets = images.filter(i => i.dataUrl);
   if (targets.length === 0) { showToast('先导入图片', 'error'); return; }
 
+  // 新一轮整目录扫描 = 新的复核结果；旧队列先清掉，避免阈值改动后残留
+  clearReviewQueue();
+
   ui.segSweepRunning = true;
   ui.segSweepCancel = false;
   ui.segBatchRunning = true;
@@ -1268,6 +1492,187 @@ function loadImageEl(dataUrl: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error('图片解码失败'));
     img.src = dataUrl;
   });
+}
+
+// ============================================================
+// YOLO 框 → SAM3 掩膜（A1）
+// ============================================================
+const MAX_YOLO_BOXES = 50;
+
+export interface YoloMaskOptions {
+  scope: 'current' | 'all';
+  /** YOLO 检测置信度（0~1） */
+  yoloConf: number;
+  onProgress?: () => void;
+}
+
+export interface YoloMaskResult {
+  images: number;
+  boxes: number;
+  accepted: number;
+  review: number;
+  discarded: number;
+  failed: number;
+  capped: number;
+}
+
+/** 用本地 YOLO ONNX 出框，再逐框让 SAM3 抠掩膜。
+ *  稳定优先：串行、逐框让出主线程、单图框数上限 50；中间分候选进 A2 复核队列。 */
+export async function runYoloToMasks(opts: YoloMaskOptions): Promise<YoloMaskResult> {
+  const result: YoloMaskResult = { images: 0, boxes: 0, accepted: 0, review: 0, discarded: 0, failed: 0, capped: 0 };
+  if (ui.segSweepRunning) { showToast('正在扫描，请先等当前任务结束', 'info'); return result; }
+  if (!(await ensureSegReady())) return result;
+  if (!isSegBoxSupported()) {
+    showToast('当前后端不支持框提示（box）——请重启新版 sam_server.py', 'error');
+    return result;
+  }
+  const yolo = await import('../yolo');
+  if (!yolo.isModelLoaded()) {
+    showToast('请先加载 YOLO .onnx 模型', 'error');
+    return result;
+  }
+
+  const targets = opts.scope === 'all'
+    ? images.filter(i => i.dataUrl)
+    : (ui.currentImage ? [images[ui.currentImageIndex]] : []);
+  if (targets.length === 0) { showToast('先导入图片', 'error'); return result; }
+
+  ui.segSweepRunning = true;
+  ui.segBatchRunning = true;
+  ui.segSweepCancel = false;
+  ui.segBatchTotal = targets.length;
+  ui.segBatchDone = 0;
+  ui.segBatchCurrent = '';
+  const conf = Math.max(0, Math.min(1, opts.yoloConf));
+
+  try {
+    for (const info of targets) {
+      if (ui.segSweepCancel) break;
+      ui.segBatchCurrent = info.name;
+      try { opts.onProgress?.(); } catch { /* 忽略 */ }
+      try {
+        const img = await loadImageEl(info.dataUrl);
+        const W = img.naturalWidth, H = img.naturalHeight, total = W * H;
+        const existingMask = maskMap.get(info.name);
+        if (existingMask && (existingMask.width !== W || existingMask.height !== H)) {
+          result.failed++;
+          console.warn('[segmentation] YOLO 跳过尺寸不一致的掩膜：', info.name);
+          // 跳过这张图，但进度仍要前进
+          ui.segBatchDone++;
+          bump();
+          try { opts.onProgress?.(); } catch { /* 忽略 */ }
+          continue;
+        }
+
+        const dets = await yolo.detect(img, {
+          confThreshold: conf,
+          iouThreshold: 0.45,
+          inputSize: 640,
+          modelFormat: 'auto',
+        });
+        const sorted = dets.slice().sort((a, b) => b.confidence - a.confidence);
+        if (sorted.length > MAX_YOLO_BOXES) result.capped += sorted.length - MAX_YOLO_BOXES;
+        const boxes = sorted.slice(0, MAX_YOLO_BOXES);
+        result.images++;
+
+        let checkpointDone = false;
+        let changed = 0;
+        let boxDone = 0;
+
+        for (const det of boxes) {
+          if (ui.segSweepCancel) break;
+          result.boxes++;
+          boxDone++;
+          const box = normalizeBox(det.x, det.y, det.x + det.w, det.y + det.h, W, H);
+          if (box.x2 - box.x1 < 1 || box.y2 - box.y1 < 1) { result.discarded++; continue; }
+
+          try {
+            const res = await predictWithBox(img, box);
+            if (!res.map) { result.discarded++; continue; }
+
+            const className = ensureSegClass(det.className || 'object');
+            let area = 0, minX = W, minY = H, maxX = -1, maxY = -1;
+            for (let i = 0; i < res.map.length; i++) {
+              const v: number = res.map[i];
+              if (!v) continue;
+              area++;
+              const y = (i / W) | 0;
+              const x = i - y * W;
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+            if (!area) { result.discarded++; continue; }
+
+            const bb = { x1: minX, y1: minY, x2: maxX + 1, y2: maxY + 1 };
+            const kind = inferKind(className, area / (total || 1));
+
+            if (res.score >= ui.segSweepAutoAccept) {
+              const added = applyCandidateItems(
+                info.name, res.map, W, H,
+                [{ k: 1, className, kind, score: res.score, box: bb, area }],
+                { checkpoint: !checkpointDone, silent: true },
+              );
+              if (added) {
+                result.accepted++;
+                changed++;
+                checkpointDone = true;
+                removeReviewItemBySignature(info.name, className, res.score, bb, area);
+              } else {
+                result.discarded++;
+                // 单图 255 区域上限：这张图后面的框再试也没意义
+                if ((maskMap.get(info.name)?.regions.length || 0) >= 255) break;
+              }
+            } else if (res.score >= ui.segConfThreshold) {
+              // 中间分：进 A2 跨图复核队列（只存 bbox 内 RLE）
+              queueReviewCandidate(info.name, className, kind, res.score, area, bb, W, H, res.map, 1);
+              result.review++;
+            } else {
+              result.discarded++;
+            }
+          } catch (e: any) {
+            result.failed++;
+            console.warn('[segmentation] YOLO 框掩膜失败：', info.name, e);
+          }
+
+          // 每 5 个框让出一次主线程 + 刷新进度，避免重演白屏
+          if (boxDone % 5 === 0) {
+            await new Promise(r => setTimeout(r, 0));
+            try { opts.onProgress?.(); } catch { /* 忽略 */ }
+          }
+        }
+
+        if (changed > 0) markMaskDirtyFor(info.name);
+      } catch (e: any) {
+        result.failed++;
+        console.warn('[segmentation] YOLO 处理这张图失败：', info.name, e);
+      }
+      ui.segBatchDone++;
+      bump();
+      try { opts.onProgress?.(); } catch { /* 忽略 */ }
+      await new Promise(r => setTimeout(r, 0));
+    }
+  } finally {
+    ui.segSweepRunning = false;
+    ui.segBatchRunning = false;
+    ui.segBatchCurrent = '';
+    ui.segSweepCancel = false;
+    bump();
+  }
+
+  if (result.accepted > 0) saveAnnotations();
+  const extra = [
+    result.review > 0 ? `${result.review} 个待复核` : '',
+    result.failed > 0 ? `${result.failed} 个失败` : '',
+    result.capped > 0 ? `单图超过 ${MAX_YOLO_BOXES} 框已截断 ${result.capped} 个` : '',
+  ].filter(Boolean).join('，');
+  showToast(
+    `YOLO → 掩膜：${result.images} 张图、${result.boxes} 个框；接受 ${result.accepted}，复核 ${result.review}` +
+    (extra ? `（${extra}）` : ''),
+    result.accepted + result.review > 0 ? 'success' : 'info',
+  );
+  return result;
 }
 
 /** 复核某个词：重新取一次它的候选，挂到现有的候选区（一次只挂一个词） */

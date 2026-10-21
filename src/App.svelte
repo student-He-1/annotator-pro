@@ -49,6 +49,7 @@
   import PropertiesPanel from './components/PropertiesPanel.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import SettingsModal from './components/SettingsModal.svelte';
+  import Splash from './components/Splash.svelte';
   import DatasetSplitModal from './components/DatasetSplitModal.svelte';
   import QualityCheckModal from './components/QualityCheckModal.svelte';
   import YoloAnnotationModal from './components/YoloAnnotationModal.svelte';
@@ -60,6 +61,8 @@
   import { parseLabelMe } from './lib/import/labelme';
 
   let showSettings = $state(false);
+  /** 启动动画：只覆盖界面，不阻塞背后的初始化 */
+  let showSplash = $state(true);
   let showDatasetSplit = $state(false);
   let showQualityCheck = $state(false);
   let showYoloModal = $state(false);
@@ -1126,6 +1129,10 @@
 </script>
 
 <svelte:window ondrop={handleDrop} ondragover={handleDragOver} />
+
+{#if showSplash}
+  <Splash onDone={() => showSplash = false} />
+{/if}
 
 <div class="app">
   {#if !sidebarCollapsed}

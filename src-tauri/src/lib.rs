@@ -424,6 +424,33 @@ async fn sam_segment(
     Ok(json)
 }
 
+/// 用系统默认浏览器打开外部链接（设置 → 关于里的 GitHub 地址）。
+/// WebView2 里 target="_blank" 不一定会弹浏览器，所以走系统命令。
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("only http(s) URLs are allowed".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| format!("open browser failed: {}", e))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("open browser failed: {}", e))?;
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     std::panic::set_hook(Box::new(|info| {
@@ -456,6 +483,7 @@ pub fn run() {
             sam_sidecar_start,
             sam_sidecar_stop,
             sam_segment,
+            open_external_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

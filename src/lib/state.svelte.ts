@@ -129,6 +129,8 @@ export const ui = $state({
   segBatchCurrent: '',
   /** 候选 hover 预览：鼠标停在候选行上时，画布上把那一个候选提亮 */
   segHoverCandidate: 0,
+  /** 当前正在复核的队列项 id（'' = 无）；用于接受/丢弃时同步移除队列 */
+  segReviewActiveId: '' as string,
   // ---- 修正工具 ----
   /** 画笔/橡皮的笔刷直径（图像像素，不是屏幕像素） */
   segBrushSize: 24,
@@ -400,6 +402,72 @@ export function copyToAllSubsequent(): number {
     saveAnnotations();
   }
   return totalCopied;
+}
+
+export interface CopyRangeResult {
+  /** 实际复制的标注总数 */
+  copied: number;
+  /** 实际写入的图片数 */
+  images: number;
+  /** 因为已有标注而跳过的图片数 */
+  skippedExisting: number;
+  /** 因为尺寸与当前图不一致而跳过的图片数 */
+  skippedSize: number;
+  /** 范围里包含当前图而跳过的次数 */
+  skippedCurrent: number;
+}
+
+/** 把当前图片的标注复制到指定图片范围（第 start~end 张，1 起闭区间）。
+ *
+ *  安全策略（避免「批量复制」变成批量制造错标）：
+ *  - 跳过当前图本身；
+ *  - 跳过尺寸不一致的图（标注坐标按原图，尺寸不同会错位）；
+ *  - 跳过已有标注的图（不追加、不覆盖；要覆盖请先用批量删除清空）。
+ *  整批只进一条历史，Ctrl+Z 能整体还原。 */
+export function copyCurrentToRange(start: number, end: number): CopyRangeResult {
+  const empty: CopyRangeResult = { copied: 0, images: 0, skippedExisting: 0, skippedSize: 0, skippedCurrent: 0 };
+  if (ui.currentImageIndex < 0) return empty;
+  const src = images[ui.currentImageIndex];
+  if (!src) return empty;
+  const srcAnns = annotations[src.name] || [];
+  if (srcAnns.length === 0) return empty;
+
+  const s = Math.max(0, start - 1);
+  const e = Math.min(images.length, end > 0 ? end : images.length);
+  const targets = s < e ? images.slice(s, e) : [];
+  const changed: string[] = [];
+  let copied = 0;
+  let imageCount = 0;
+
+  for (const img of targets) {
+    if (img.name === src.name) { empty.skippedCurrent++; continue; }
+    if (img.width !== src.width || img.height !== src.height) { empty.skippedSize++; continue; }
+    if ((annotations[img.name] || []).length > 0) { empty.skippedExisting++; continue; }
+
+    captureUndoBaseline(img.name);
+    annotations[img.name] = srcAnns.map((ann, i) => {
+      const copy = JSON.parse(JSON.stringify(ann));
+      copy.id = i;
+      if (copy.trackId === undefined) copy.trackId = ann.id;
+      return copy;
+    });
+    imageModified[img.name] = true;
+    changed.push(img.name);
+    copied += srcAnns.length;
+    imageCount++;
+  }
+
+  if (changed.length > 0) {
+    pushHistory(changed);
+    saveAnnotations();
+  }
+  return {
+    copied,
+    images: imageCount,
+    skippedExisting: empty.skippedExisting,
+    skippedSize: empty.skippedSize,
+    skippedCurrent: empty.skippedCurrent,
+  };
 }
 
 /** 构造某张图的「当前状态」快照（annotations + 分类标签）。

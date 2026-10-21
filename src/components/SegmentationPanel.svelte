@@ -15,7 +15,10 @@
     reviewSweepClass, cleanupSmallIslands, getRefinePoints, clearRefinePoints,
     runBatchSweep, setHoverCandidate, measureCandidateOverlap,
     filterSmallCandidates, deleteSmallRegions, getImagesWithMasks,
+    getReviewQueue, previewReviewItem, discardReviewItem, clearReviewQueue, nextReviewItem,
+    runYoloToMasks,
   } from '$lib/segmentation/store.svelte';
+  import { loadModel } from '$lib/yolo';
   import { SEG_PRESETS } from '$lib/segmentation/presets';
   import { describeMasks, getUnmappedCityscapesClasses, SEG_EXPORT_FORMATS } from '$lib/export/segmentation-export';
   import { getSegEmbedRequestCount, getSegEmbedCacheSize } from '$lib/segmentation/samMask';
@@ -31,11 +34,15 @@
 
   let newClass = $state('');
   let busy = $state(false);
+  let yoloConf = $state(0.25);
+  let yoloLoading = $state(false);
+  let yoloFileInput: HTMLInputElement;
 
   const curName = $derived(images[ui.currentImageIndex]?.name || '');
   // $derived 里读 ui.maskRev 才会在掩膜变化时重算（掩膜本体不在 $state 里）
   const regions = $derived((ui.maskRev, curName ? getRegions(curName) : []));
   const cands = $derived((ui.maskRev, getCandidates()));
+  const reviewQueue = $derived((ui.maskRev, getReviewQueue()));
   const selected = $derived(ui.segSelectedRegion);
   /** Cityscapes 语义图导出前要提醒的「映射不到」类别（它们会被写成 void=255） */
   const unmapped = $derived((ui.maskRev, curName ? getUnmappedCityscapesClasses(getImageMask(curName)) : []));
@@ -145,6 +152,54 @@
   function doDiscard(k: number) {
     discardCandidate(k);
     render();
+  }
+
+  function doPreviewReview(id: string) {
+    if (previewReviewItem(id)) render();
+  }
+
+  function doDiscardReview(id: string) {
+    discardReviewItem(id);
+    render();
+  }
+
+  function doNextReview() {
+    if (!nextReviewItem()) showToast('复核队列已空', 'info');
+    else render();
+  }
+
+  function doClearReview() {
+    if (reviewQueue.length === 0) return;
+    if (!confirm(`确定清空 ${reviewQueue.length} 个复核候选吗？`)) return;
+    clearReviewQueue();
+    render();
+  }
+
+  async function pickYoloModel(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const f = input.files?.[0];
+    if (!f) return;
+    yoloLoading = true;
+    try {
+      await loadModel(f);
+      showToast(`YOLO 模型已加载：${f.name}`, 'success');
+    } catch (err: any) {
+      showToast('YOLO 模型加载失败：' + (err?.message || err), 'error');
+    } finally {
+      yoloLoading = false;
+      input.value = '';
+    }
+  }
+
+  async function runYolo(scope: 'current' | 'all') {
+    if (busy || ui.segSweepRunning) return;
+    busy = true;
+    try {
+      await runYoloToMasks({ scope, yoloConf, onProgress: () => render() });
+      render();
+    } finally {
+      busy = false;
+    }
   }
 
   function doRegionClick(ordinal: number) {
@@ -304,6 +359,63 @@
         </div>
       {/if}
     </div>
+
+    <!-- YOLO 框 → 掩膜（A1） -->
+    <div class="section">
+      <h4>YOLO 框 → 掩膜</h4>
+      <p class="muted tiny">
+        本地 ONNX 检测框 → SAM3 按框抠掩膜；高分数自动接受，中间分进复核队列。需要 Python 后端支持 box。
+      </p>
+      <div class="row-line">
+        <span class="muted tiny">
+          模型：{ui.yoloModelName || '未加载'}{ui.yoloModelName ? `（${ui.yoloClassCount} 类）` : ''}
+        </span>
+        <button class="btn-mini" onclick={() => yoloFileInput.click()}
+          disabled={busy || yoloLoading || ui.segSweepRunning}>
+          {yoloLoading ? '加载中…' : '选择 .onnx'}
+        </button>
+        <input style="display:none" type="file" accept=".onnx" bind:this={yoloFileInput} onchange={pickYoloModel} />
+      </div>
+      <div class="row-line">
+        <label class="muted tiny" for="yolo-conf">YOLO 置信度</label>
+        <input id="yolo-conf" class="text-input" type="number" bind:value={yoloConf}
+          min="0" max="1" step="0.05" style="width:70px" />
+        <span class="muted tiny">SAM 分数阈值沿用上方「候选 / 自动接受」</span>
+      </div>
+      <div class="row-line">
+        <button class="btn-mini primary" onclick={() => runYolo('current')}
+          disabled={busy || !ui.yoloModelName || ui.segSweepRunning}>当前图</button>
+        <button class="btn-mini" onclick={() => runYolo('all')}
+          disabled={busy || !ui.yoloModelName || ui.segSweepRunning || !images.length}>全部图片</button>
+      </div>
+    </div>
+
+    <!-- 跨图复核队列（A2） -->
+    {#if reviewQueue.length > 0}
+      <div class="section">
+        <div class="row-line">
+          <h4 style="margin:0">复核队列 {reviewQueue.length}</h4>
+          <button class="btn-mini" onclick={doNextReview} title="按分数从低到高切到下一项">下一项</button>
+          <button class="btn-mini" onclick={doClearReview}>清空</button>
+        </div>
+        <p class="muted tiny">按分数从低到高。点「◎」切到对应图片并把它挂成候选，再用 ✓ / Enter 接受。</p>
+        <div class="list">
+          {#each reviewQueue as q (q.id)}
+            <div class="item cand" role="listitem" title={q.imageName}>
+              <span class="idx">{q.score.toFixed(2)}</span>
+              <span class="cls">{q.className}</span>
+              <span class="kind" class:stuff={q.kind === 'stuff'}>{q.kind === 'stuff' ? '整片' : '实例'}</span>
+              <span class="muted tiny" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                {q.imageName.split(/[\\/]/).pop() || q.imageName}
+              </span>
+              <span class="muted tiny">{q.area.toLocaleString()}px</span>
+              <button class="btn-icon" title="复核这张图" onclick={() => doPreviewReview(q.id)}>◎</button>
+              <button class="btn-icon no" title="丢弃" onclick={() => doDiscardReview(q.id)}>✕</button>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     <!-- 候选 -->
     {#if cands.length > 0}
@@ -513,8 +625,9 @@
       <p class="muted tiny">
         V 选择区域 · T 文本提示 · B 点提示（Shift = 负点）· X 框提示<br />
         W 画笔 · E 橡皮 · R 负点修正 · C 区域拆分<br />
-        Delete 删除选中区域 · Ctrl+Z / Ctrl+Y 掩膜撤销重做<br />
-        滚轮缩放 · 中键或 Alt+拖 平移
+        Enter 接受第一个候选 · Backspace 丢弃候选（未选中区域时）<br />
+        数字键 1~9 给选中区域换类别 · Delete 删除选中区域<br />
+        Ctrl+Z / Ctrl+Y 掩膜撤销重做 · 滚轮缩放 · 中键或 Alt+拖 平移
       </p>
     </div>
   </div>

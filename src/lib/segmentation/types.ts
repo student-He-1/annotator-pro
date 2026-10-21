@@ -60,6 +60,31 @@ export interface MaskCandidate {
   box?: MaskBox;
 }
 
+/** 跨图复核队列的候选项：只存二值掩膜的 RLE，不存整图 map（避免大工程常驻几十 MB） */
+export interface ReviewQueueItem {
+  /** 稳定标识：图片 + 类别 + 分数 + box + 面积（用于去重/移除） */
+  id: string;
+  imageName: string;
+  className: string;
+  kind: MaskRegionKind;
+  score: number;
+  area: number;
+  box?: MaskBox;
+  /** 整图尺寸（复核时用来还原成整图候选 map） */
+  width: number;
+  height: number;
+  /** 候选二值掩膜只存 bbox 内的 RLE，避免每个候选都分配/压缩一张整图 */
+  x0: number;
+  y0: number;
+  bw: number;
+  bh: number;
+  counts: number[];
+  ids: number[];
+}
+
+/** 面板展示用的轻量元数据（不含 RLE 数组） */
+export type ReviewQueueMeta = Omit<ReviewQueueItem, 'counts' | 'ids'>;
+
 /** 「一键全类扫描」里单个类别的结果 */
 export interface SegSweepResult {
   className: string;

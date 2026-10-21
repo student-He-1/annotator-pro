@@ -25,6 +25,7 @@
     undoMask, redoMask, onImageSwitched, clearCandidates,
     beginMaskStroke, paintAt, endMaskStroke, ensureBrushRegion, brushTargetOrdinal,
     refineSelectedWithPoint, mergeRegionInto, clearRefinePoints, splitRegionByLine, runBoxPrompt,
+    getCandidates, acceptCandidate, discardCandidate, measureCandidateOverlap, setRegionClass,
   } from '$lib/segmentation/store.svelte';
 
   let canvasEl: HTMLCanvasElement;
@@ -540,6 +541,55 @@
     if (matchShortcut(e, ui.shortcuts.zoomOut)) { e.preventDefault(); ui.zoom = Math.max(getMinZoom(), ui.zoom / 1.2); clampPan(); render(); return; }
     if (matchShortcut(e, ui.shortcuts.fit)) { e.preventDefault(); fitToScreen(); render(); return; }
 
+    // A4 键盘流：候选 Enter 接受第一个；未选中区域时 Backspace 丢弃第一个。
+    // 事件来自分割面板内部时交给面板自己处理，避免和区域列表的 Enter 双触发。
+    const inSegPanel = e.target instanceof HTMLElement && !!e.target.closest('.seg-panel');
+    if (!inSegPanel && e.key === 'Enter' && !mod && !e.altKey) {
+      const cands = getCandidates();
+      if (cands.length > 0) {
+        e.preventDefault();
+        const c = cands[0];
+        const name = images[ui.currentImageIndex]?.name;
+        if (name) {
+          const ov = measureCandidateOverlap(name, [c.k]);
+          if (ov.px > 0) {
+            const ok = confirm(
+              `本次接受会覆盖已有区域的 ${ov.px.toLocaleString()} 个像素（涉及 ${ov.regions} 个区域）。\n\n` +
+              `单索引图里后接受的区域会盖住前面的；继续吗？`,
+            );
+            if (!ok) return;
+          }
+          acceptCandidate(c.k, c.className, c.kind);
+          render();
+          // 这张图的候选处理完 → 自动跳到下一张
+          if (getCandidates().length === 0 && ui.currentImageIndex < images.length - 1) {
+            ui.currentImageIndex = ui.currentImageIndex + 1;
+          }
+        }
+        return;
+      }
+    }
+    if (e.key === 'Backspace' && !mod && !e.altKey) {
+      const cands = getCandidates();
+      if (cands.length > 0 && !ui.segSelectedRegion) {
+        e.preventDefault();
+        discardCandidate(cands[0].k);
+        render();
+        return;
+      }
+    }
+    // 数字键 1~9 给选中的分割区域换类别（按 segClasses 顺序）
+    if (!mod && !e.altKey && /^[1-9]$/.test(e.key) && ui.segSelectedRegion > 0) {
+      const cls = ui.segClasses[Number(e.key) - 1];
+      if (cls) {
+        e.preventDefault();
+        setRegionClass(ui.segSelectedRegion, cls);
+        render();
+        showToast(`类别 → ${cls}`, 'success');
+      }
+      return;
+    }
+
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (ui.segSelectedRegion) {
         e.preventDefault();
@@ -977,6 +1027,23 @@
 
     if (matchShortcut(e, ui.shortcuts.delete)) { e.preventDefault(); deleteSelected(); return; }
     if (matchShortcut(e, ui.shortcuts.copy)) { e.preventDefault(); copySelected(); return; }
+
+    // A4：数字键 1~9 给选中标注换类别（关键点的 className 是骨架类型，不参与）
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+      const ann = ui.selectedAnnotation;
+      if (ann && ann.type !== 'keypoint') {
+        const cls = classes[Number(e.key) - 1];
+        if (cls && ann.className !== cls) {
+          e.preventDefault();
+          ann.className = cls;
+          pushHistory();
+          markModified();
+          render();
+          showToast(`类别 → ${cls}`, 'success');
+        }
+      }
+      return;
+    }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'd') {
       e.preventDefault();
       const copied = copyAllToNextImage();

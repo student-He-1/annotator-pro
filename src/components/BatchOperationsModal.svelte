@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { images, classes, showToast, ui, saveAnnotations, pushHistory, captureUndoBaseline, imageModified } from '$lib/state.svelte';
-  import { batchChangeClass, batchDeleteClass, batchDeleteAll, copyToAllSubsequent } from '$lib/state.svelte';
+  import { images, classes, showToast, ui, saveAnnotations, pushHistory, captureUndoBaseline, imageModified, annotations } from '$lib/state.svelte';
+  import { batchChangeClass, batchDeleteClass, batchDeleteAll, copyToAllSubsequent, copyCurrentToRange } from '$lib/state.svelte';
 
   interface Props {
     onClose: () => void;
@@ -24,6 +24,10 @@
   let deleteClass = $state('');
   let deleteScope = $state<'all' | 'current' | 'range'>('all');
   let deleteAll = $state(false);
+
+  // 批量复制到指定范围（1 起闭区间）
+  let copyStart = $state(Math.min(images.length, ui.currentImageIndex + 2));
+  let copyEnd = $state(images.length);
 
   function getCurrentImageName(): string {
     return ui.currentImageIndex >= 0 && images[ui.currentImageIndex] ? images[ui.currentImageIndex].name : '';
@@ -179,6 +183,31 @@
     } else {
       showToast('当前图片没有标注', 'info');
     }
+  }
+
+  function handleCopyToRange() {
+    if (ui.currentImageIndex < 0) {
+      showToast('请先选择图片', 'error');
+      return;
+    }
+    const res = copyCurrentToRange(copyStart, copyEnd);
+    if (res.copied === 0) {
+      const reasons: string[] = [];
+      if (res.skippedSize > 0) reasons.push(`${res.skippedSize} 张尺寸不一致`);
+      if (res.skippedExisting > 0) reasons.push(`${res.skippedExisting} 张已有标注`);
+      if (res.skippedCurrent > 0) reasons.push('范围包含当前图');
+      showToast(reasons.length > 0 ? `没有复制：${reasons.join('，')}` : '当前图片没有标注或范围为空', 'info');
+      return;
+    }
+    const skipped: string[] = [];
+    if (res.skippedSize > 0) skipped.push(`跳过 ${res.skippedSize} 张尺寸不一致`);
+    if (res.skippedExisting > 0) skipped.push(`跳过 ${res.skippedExisting} 张已有标注`);
+    showToast(
+      `已复制 ${res.copied} 个标注到 ${res.images} 张图片` +
+      (skipped.length > 0 ? `（${skipped.join('，')}）` : ''),
+      'success',
+    );
+    onRefresh();
   }
 </script>
 
@@ -392,11 +421,33 @@
         <div class="tab-content">
           <div class="info-box">
             <p><strong>当前图片：</strong>{getCurrentImageName() || '未选择'}</p>
+            <p><strong>当前图标注：</strong>{(annotations[getCurrentImageName()] || []).length} 个</p>
             <p><strong>后续图片：</strong>{ui.currentImageIndex >= 0 ? Math.max(0, images.length - ui.currentImageIndex - 1) : 0} 张</p>
           </div>
-          <p class="desc">将当前图片的所有标注复制到后续每一张图片。适用于视频帧序列或相似图片的快速标注。</p>
+
+          <p class="desc">追加复制到后续每一张图片（目标已有标注会叠加）。适用于视频帧序列或相似图片的快速标注。</p>
           <button class="btn primary" onclick={handleCopyToAll}>
             复制到所有后续图片
+          </button>
+
+          <div class="divider">或</div>
+
+          <div class="form-row">
+            <span>复制到指定范围（第 X~Y 张）</span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span>第</span>
+              <input type="number" bind:value={copyStart} min="1" max={images.length} style="width:60px" />
+              <span>到</span>
+              <input type="number" bind:value={copyEnd} min="1" max={images.length} style="width:60px" />
+              <span>张 (共 {images.length} 张)</span>
+            </div>
+          </div>
+          <p class="desc">
+            只复制到尺寸与当前图一致、且还没有标注的图片；当前图会跳过。
+            尺寸不一致的图不会复制（坐标会错位），已有标注的图也不会覆盖。整批只占一个 <kbd>Ctrl</kbd>+<kbd>Z</kbd>。
+          </p>
+          <button class="btn primary" onclick={handleCopyToRange}>
+            复制到指定范围
           </button>
 
           <div class="divider">或</div>
