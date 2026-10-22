@@ -22,6 +22,8 @@
     onQualityCheck: () => void;
     onYoloAnnotation: () => void;
     onSamAnnotation: () => void;
+    /** 顶部「模型状态」面板：三种工作模式共用一个入口 */
+    onModels: () => void;
     onStatistics: () => void;
     onImageQuality: () => void;
     onBatchOps: () => void;
@@ -190,6 +192,15 @@
   {/if}
 
   <div class="divider"></div>
+  <!-- 模型状态：三端复用同一入口。小圆点跟着后端状态变色（绿=已就绪，黄=加载中） -->
+  <button class="icon-btn models-btn" onclick={props.onModels} title="模型状态（SAM3 后端 / YOLO ONNX / 按需模型）">
+    <Icon name="cpu" size={16} />
+    <span class="model-dot"
+      class:ready={ui.samBackendState === 'ready'}
+      class:busy={ui.samBackendState === 'starting' || ui.samBackendState === 'loading'}
+      class:error={ui.samBackendState === 'error'}></span>
+  </button>
+  <div class="divider"></div>
   <button class="icon-btn" onclick={props.onSettings} title={t('settings')}>
     <Icon name="settings" size={16} />
   </button>
@@ -242,6 +253,18 @@
   }
   .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
   .icon-btn:disabled:hover { background: transparent; color: var(--text-secondary); transform: none; }
+
+  /* 模型状态小圆点：叠在图标右下角，不占额外宽度 */
+  .models-btn { position: relative; }
+  .model-dot {
+    position: absolute; right: 5px; bottom: 4px;
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .model-dot.ready { background: #3fb950; box-shadow: 0 0 4px rgba(63,185,80,0.8); }
+  .model-dot.busy { background: #d2991d; animation: model-pulse 1.1s ease-in-out infinite; }
+  .model-dot.error { background: #f85149; }
+  @keyframes model-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
 
   /* 「保存标注」按钮：有未保存改动时点亮，和状态栏那个黄点同源（都读 imageModified） */
   .save-annot-btn.dirty {

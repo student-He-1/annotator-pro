@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "pythonExe": "C:\\path\\to\\anaconda3\\envs\\deeplearning\\python.exe",
+  "script": "D:\\path\\to\\annotator-pro\\src-tauri\\sidecar\\sam_server.py",
+  "sam3Model": "D:\\models\\sam3.pt",
+  "poseModel": "D:\\models\\yolov8n-pose.pt",
+  "torchHome": "D:\\models\\torch_home",
+  "port": 1421
+}

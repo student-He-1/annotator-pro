@@ -1,10 +1,13 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { t } from '$lib/i18n.svelte';
   import { ui, images, annotations, showToast, pushHistory, saveAnnotations, getActiveClass, captureUndoBaseline } from '$lib/state.svelte';
   import { loadModel, isModelLoaded, getModelName, segment, DEFAULT_SAM_CONFIG, clearCache } from '$lib/sam';
   import type { SamResult } from '$lib/sam';
   import type { Annotation } from '$lib/types';
   import { render } from '$lib/canvas/engine.svelte';
+  import { startSidecar } from '$lib/samSidecar';
+  import { watchBackendStatus } from '$lib/samBackendStatus';
 
   interface Props {
     onClose: () => void;
@@ -36,15 +39,46 @@
   // 读 $state，而不是 isModelLoaded()：后者读模块级普通变量，Svelte 追踪不到变化，
   // 连接成功后界面不会刷新（还得关掉重开一次）。
   const modelLoaded = $derived(ui.samModelReady);
+  const hasTauri = typeof window !== 'undefined'
+    && (!!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__);
+
+  /** 后端状态文案：进程启动 → 模型加载 → 已就绪，让用户知道什么时候能点连接 */
+  const statusText = $derived(
+    ui.samBackendState === 'ready'
+      ? (ui.samModelReady ? '已连接，可以直接使用' : '模型已就绪 · 可以连接')
+      : ui.samBackendState === 'starting' ? '正在启动后端进程…'
+      : ui.samBackendState === 'loading' ? '模型正在加载中（首次约 10~30 秒）…'
+      : ui.samBackendState === 'error' ? '未连接'
+      : '未启动'
+  );
+  const dotClass = $derived(
+    ui.samBackendState === 'ready' ? 'ok'
+      : (ui.samBackendState === 'starting' || ui.samBackendState === 'loading') ? 'busy'
+      : ui.samBackendState === 'error' ? 'err' : ''
+  );
+  const busy = $derived(ui.samBackendState === 'starting' || ui.samBackendState === 'loading');
+
+  // 打开弹窗时如果模型还没就绪，补一次轮询；App 启动时已经在轮询的话这里只是延长截止时间
+  onMount(() => {
+    if (ui.samBackendState !== 'ready') watchBackendStatus(45_000);
+  });
 
   async function handleLoadModel() {
     try {
       isRunning = true;
-      // 后端自动加载模型，这里只是检查连接
+      // 后端没配好时先尝试拉起；随后 loadModel 只做 /health 检查
+      if (hasTauri && ui.samBackendState !== 'ready') {
+        await startSidecar().catch(() => false);
+      }
       await loadModel(null as any, null as any);
       showToast(`SAM 后端已连接: ${getModelName()}`, 'success');
     } catch (e: any) {
-      showToast(`连接失败: ${e.message || e}`, 'error');
+      if (ui.samBackendState === 'loading') {
+        showToast('模型还在加载，正在等待就绪…', 'info');
+        watchBackendStatus(45_000);
+      } else {
+        showToast(`连接失败: ${e.message || e}`, 'error');
+      }
     } finally {
       isRunning = false;
     }
@@ -140,18 +174,35 @@
       <button class="close-btn" onclick={onClose}>×</button>
     </div>
     <div class="modal-body">
-      {#if !modelLoaded}
-        <div class="section">
-          <h4>1. 连接 GPU 推理后端</h4>
-          <p class="hint">SAM 3 在 Python GPU 后端运行（localhost:1421）</p>
-          <p class="hint">首次启动需要加载模型（约 10 秒）</p>
-          <button class="btn-primary" onclick={handleLoadModel} disabled={isRunning}>
-            {isRunning ? '连接中...' : '连接后端服务'}
-          </button>
+      <div class="section">
+        <h4>1. 连接 GPU 推理后端</h4>
+        <p class="hint">SAM 3 在 Python GPU 后端运行（localhost:{ui.samBackendPort}）</p>
+        <div class="status-line">
+          <span class="dot" class:ok={dotClass === 'ok'} class:busy={dotClass === 'busy'} class:err={dotClass === 'err'}></span>
+          <span class:ok-text={dotClass === 'ok'} class:busy-text={dotClass === 'busy'} class:err-text={dotClass === 'err'}>
+            {statusText}
+          </span>
         </div>
-      {:else}
+        {#if ui.samBackendState === 'error' && ui.samBackendError}
+          <p class="hint err-text">原因：{ui.samBackendError}</p>
+        {/if}
+        {#if busy}
+          <p class="hint">模型还没加载完，先不用点；就绪后按钮会亮起。可以先做标注，不影响使用。</p>
+        {/if}
+        <button class="btn-primary" onclick={handleLoadModel}
+          disabled={isRunning || busy || ui.samModelReady}>
+          {ui.samModelReady
+            ? '已连接'
+            : isRunning ? '连接中…'
+            : ui.samBackendState === 'starting' ? '正在启动后端…'
+            : ui.samBackendState === 'loading' ? '模型加载中…'
+            : '连接后端服务'}
+        </button>
+      </div>
+
+      {#if modelLoaded}
         <div class="section">
-          <h4>模型已加载</h4>
+          <h4>模型已连接</h4>
           <p class="success">{getModelName()}</p>
         </div>
       {/if}
@@ -227,6 +278,17 @@
   .section h4 { margin: 0 0 10px; font-size: 14px; color: #58a6ff; }
   .hint { font-size: 12px; color: var(--text-secondary); margin: 4px 0; }
   .success { color: #3fb950; font-size: 13px; }
+
+  /* 后端状态：小绿点 = 模型已就绪；黄点脉冲 = 启动/加载中；红点 = 连不上 */
+  .status-line { display: flex; align-items: center; gap: 7px; margin: 8px 0 4px; font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+  .dot.ok { background: #3fb950; box-shadow: 0 0 6px rgba(63,185,80,0.75); }
+  .dot.busy { background: #d2991d; animation: sam-pulse 1.1s ease-in-out infinite; }
+  .dot.err { background: #f85149; }
+  .ok-text { color: #3fb950; }
+  .busy-text { color: #d2991d; }
+  .err-text { color: #f85149; }
+  @keyframes sam-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
   .form-row {
     display: flex; align-items: center; justify-content: space-between;
     margin: 8px 0;

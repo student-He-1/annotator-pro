@@ -420,7 +420,34 @@ def health():
     }
 
 
+def _watch_parent():
+    """父进程（Tauri 主程序）被强杀时自动退出，避免残留占用端口和显存。
+
+    只在自动启动时生效：Rust 会用 SAM_PARENT_PID 传入主程序 PID；
+    手动 `python sam_server.py` 没有这个变量，行为不变。
+    """
+    if os.name != "nt":
+        return
+    pid = os.environ.get("SAM_PARENT_PID")
+    if not pid:
+        return
+    try:
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        INFINITE = 0xFFFFFFFF
+        h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+        if not h:
+            return
+        threading.Thread(
+            target=lambda: (ctypes.windll.kernel32.WaitForSingleObject(h, INFINITE), os._exit(0)),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        print(f"[SAM Server] parent watchdog disabled: {e}", flush=True)
+
+
 if __name__ == "__main__":
     import uvicorn
+    _watch_parent()
     print(f"SAM_SERVER_READY http://{HOST}:{PORT}", flush=True)
     uvicorn.run(app, host=HOST, port=PORT)

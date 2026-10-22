@@ -202,6 +202,8 @@
     if (!ui.currentImage) { showToast('未加载图片', 'error'); return; }
     try {
       poseRunning = true;
+      // 首次调用时后端才懒加载 YOLOv8n-pose；提前说明，避免用户以为卡住
+      if (!ui.samPoseLoaded) showToast('首次使用：正在加载人体姿态模型，约需 10~20 秒…', 'info');
       const t0 = performance.now();
       const persons = await poseDetect(ui.currentImage, 0.25);
       const elapsed = (performance.now() - t0) / 1000;
@@ -240,6 +242,8 @@
     if (!ui.currentImage) { showToast('未加载图片', 'error'); return; }
     try {
       faceRunning = true;
+      // 人脸模型（2DFAN4）首次调用才加载，比姿态更慢一点
+      if (!ui.samFaceLoaded) showToast('首次使用：正在加载人脸模型，约需 10~20 秒…', 'info');
       const t0 = performance.now();
       const faces = await faceDetect(ui.currentImage);
       const elapsed = (performance.now() - t0) / 1000;
@@ -303,6 +307,11 @@
     if (targets.length === 0) { showToast('没有需要处理的图片', 'error'); return; }
     if (batchModel === 'pcs' && !batchText.trim()) { showToast('请输入文本词', 'error'); return; }
     if (!confirm('将对 ' + targets.length + ' 张图片执行批量，开始？')) return;
+
+    // 关键点模型是懒加载的：第一次批量会顺带加载，先说明一下
+    if (batchModel !== 'pcs' && !(batchModel === 'pose' ? ui.samPoseLoaded : ui.samFaceLoaded)) {
+      showToast(`首次使用：正在加载${batchModel === 'pose' ? '人体' : '人脸'}模型，约需 10~20 秒…`, 'info');
+    }
 
     batchRunning = true;
     batchCancelFlag = false;
@@ -428,7 +437,21 @@
       <div class="section sam-section">
         <h4>智能分割 SAM</h4>
         {#if !ui.samModelReady}
-          <p class="pcs-hint">后端未连接：点工具栏的 SAM 图标 → 「连接后端服务」，连上后这里会自动可用</p>
+          <div class="sam-state-line">
+            <span class="sam-dot"
+              class:ok={ui.samBackendState === 'ready'}
+              class:busy={ui.samBackendState === 'starting' || ui.samBackendState === 'loading'}
+              class:err={ui.samBackendState === 'error'}></span>
+            <span class="pcs-hint" style="margin-top:0">
+              {#if ui.samBackendState === 'ready'}
+                模型已就绪：打开工具栏「SAM智能分割」→ 点「连接后端服务」
+              {:else if ui.samBackendState === 'starting' || ui.samBackendState === 'loading'}
+                模型正在加载中…（首次约 10~30 秒），就绪后即可连接
+              {:else}
+                后端未连接：点工具栏的 SAM 图标 → 「连接后端服务」，连上后这里会自动可用
+              {/if}
+            </span>
+          </div>
         {/if}
         <p class="muted">点击=正点 · Shift+点击=负点 · 拖拽=框选</p>
 
@@ -516,11 +539,14 @@
         <h4>姿态预标注</h4>
         <p class="muted">自动检测并生成关键点标注</p>
         <button class="btn-sm btn-primary pcs-detect-btn" onclick={handlePoseDetect} disabled={poseRunning}>
-          {poseRunning ? '检测中...' : '一键检测人体 (17点)'}
+          {poseRunning ? (ui.samPoseLoaded ? '检测中...' : '首次加载中...') : '一键检测人体 (17点)'}
         </button>
         <button class="btn-sm btn-primary pcs-detect-btn" onclick={handleFaceDetect} disabled={faceRunning}>
-          {faceRunning ? '检测中...' : '一键检测人脸 (68点)'}
+          {faceRunning ? (ui.samFaceLoaded ? '检测中...' : '首次加载中...') : '一键检测人脸 (68点)'}
         </button>
+        <p class="muted model-hint">
+          首次使用需加载对应模型（约 10~20 秒），按钮会显示「首次加载中...」，不是卡住。
+        </p>
       </div>
     {/if}
 
@@ -538,6 +564,8 @@
       </div>
       {#if batchModel === 'pcs'}
         <input type="text" class="pcs-input" placeholder="英文最准，如 flower（也可输中文）" bind:value={batchText}>
+      {:else if !(batchModel === 'pose' ? ui.samPoseLoaded : ui.samFaceLoaded)}
+        <p class="muted model-hint">首次使用该模型需加载（约 10~20 秒），请稍候。</p>
       {/if}
       <div class="batch-row">
         <label for="pp-batch-scope">范围</label>
@@ -782,6 +810,8 @@
     box-shadow: 0 0 0 2px rgba(77,163,255,0.15);
   }
   .muted { color: var(--text-muted); font-size: var(--text-sm); }
+  /* 首次加载提示：比普通说明再小一档，不抢按钮的注意力 */
+  .model-hint { font-size: 11px; line-height: 1.5; }
 
   .ann-list { max-height: 200px; overflow-y: auto; }
   .ann-list::-webkit-scrollbar { width: 3px; }
@@ -1020,6 +1050,16 @@
     color: var(--text-muted, #8b949e);
     word-break: break-all;
   }
+  /* SAM 工具里的后端状态行：与弹窗/分割面板同一套颜色语义 */
+  .sam-state-line { display: flex; align-items: flex-start; gap: 6px; margin-top: 6px; }
+  .sam-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+    background: var(--text-muted, #8b949e); margin-top: 3px;
+  }
+  .sam-dot.ok { background: #3fb950; }
+  .sam-dot.busy { background: #d2991d; animation: sam-hint-pulse 1.1s ease-in-out infinite; }
+  .sam-dot.err { background: #f85149; }
+  @keyframes sam-hint-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
   .pcs-threshold-row {
     display: flex; align-items: center; gap: 8px;
     margin-top: 8px; font-size: 11px; color: var(--text-secondary);

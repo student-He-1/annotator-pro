@@ -54,11 +54,14 @@
   import QualityCheckModal from './components/QualityCheckModal.svelte';
   import YoloAnnotationModal from './components/YoloAnnotationModal.svelte';
   import SamModelModal from './components/SamModelModal.svelte';
+  import ModelsModal from './components/ModelsModal.svelte';
   import StatisticsModal from './components/StatisticsModal.svelte';
   import ImageQualityModal from './components/ImageQualityModal.svelte';
   import BatchOperationsModal from './components/BatchOperationsModal.svelte';
   import SegmentationPanel from './components/SegmentationPanel.svelte';
   import { parseLabelMe } from './lib/import/labelme';
+  import { startSidecar } from './lib/samSidecar';
+  import { watchBackendStatus } from './lib/samBackendStatus';
 
   let showSettings = $state(false);
   /** 启动动画：只覆盖界面，不阻塞背后的初始化 */
@@ -67,6 +70,8 @@
   let showQualityCheck = $state(false);
   let showYoloModal = $state(false);
   let showSamModal = $state(false);
+  /** 顶栏「模型状态」：三种模式共用一个面板（SAM3 后端 + YOLO ONNX + 按需模型） */
+  let showModels = $state(false);
   let showStatistics = $state(false);
   let showImageQuality = $state(false);
   let showBatchOps = $state(false);
@@ -95,6 +100,7 @@
     showQualityCheck = false;
     showYoloModal = false;
     showSamModal = false;
+    showModels = false;
     showStatistics = false;
     showImageQuality = false;
     showBatchOps = false;
@@ -125,6 +131,17 @@
     initLang();
     loadSavedData();
     applyTheme();
+    // 本机后端：双击 exe 后后台自动拉起（读 exe 同级的 backend.local.json），不弹终端。
+    // 失败不影响标注；进入分割模式时会再尝试连接。
+    // 状态（启动中 / 模型加载中 / 已就绪）通过 watchBackendStatus 写进 ui，
+    // 顶栏模型面板、SAM 弹窗、分割面板共用同一份显示。
+    if ((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__) {
+      void startSidecar().then((ok) => {
+        // 拉起成功就等模型加载（最长 90 秒）；没配置时也短轮询，
+        // 兼容用户手动启动后端的情况
+        watchBackendStatus(ok ? 90_000 : 30_000);
+      });
+    }
     // 页面关闭/刷新前自动保存，防止数据丢失
     const handleBeforeUnload = () => saveAnnotationsNow();
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -1162,6 +1179,7 @@
       onQualityCheck={() => { closeAllModals(); showQualityCheck = true; }}
       onYoloAnnotation={() => { closeAllModals(); showYoloModal = true; }}
       onSamAnnotation={() => { closeAllModals(); showSamModal = true; }}
+      onModels={() => { closeAllModals(); showModels = true; }}
       onStatistics={() => { closeAllModals(); showStatistics = true; }}
       onImageQuality={() => { closeAllModals(); showImageQuality = true; }}
       onBatchOps={() => { closeAllModals(); showBatchOps = true; }}
@@ -1252,6 +1270,9 @@
 {/if}
 {#if showSamModal}
   <SamModelModal onClose={() => showSamModal = false} />
+{/if}
+{#if showModels}
+  <ModelsModal onClose={() => showModels = false} />
 {/if}
 {#if showStatistics}
   <StatisticsModal onClose={() => showStatistics = false} />

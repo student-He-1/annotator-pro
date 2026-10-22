@@ -330,7 +330,13 @@
   ) {
     if (!ui.currentImage) return;
     if (!isModelLoaded()) {
-      showToast('SAM model not loaded. Click SAM button to load model.', 'error');
+      // 用当前后端状态给出能照做的提示，不再让用户看到英文的 "model not loaded"
+      const msg = ui.samBackendState === 'ready'
+        ? '模型已就绪：打开工具栏「SAM智能分割」，点「连接后端服务」后再使用'
+        : (ui.samBackendState === 'starting' || ui.samBackendState === 'loading')
+          ? 'SAM3 模型正在加载中（首次约 10~30 秒），就绪后再点「连接后端服务」'
+          : 'SAM 后端未连接：点顶部「模型状态」查看，或打开「SAM智能分割」点连接';
+      showToast(msg, 'info');
       return;
     }
 

@@ -22,6 +22,8 @@
   import { SEG_PRESETS } from '$lib/segmentation/presets';
   import { describeMasks, getUnmappedCityscapesClasses, SEG_EXPORT_FORMATS } from '$lib/export/segmentation-export';
   import { getSegEmbedRequestCount, getSegEmbedCacheSize } from '$lib/segmentation/samMask';
+  import { watchBackendStatus } from '$lib/samBackendStatus';
+  import { onMount } from 'svelte';
 
   const colorOf = colorOfSegClass;
 
@@ -52,6 +54,22 @@
     requests: getSegEmbedRequestCount(),
     cache: getSegEmbedCacheSize(),
   }));
+
+  /** 后端状态文案：用户要能看出「还在加载」还是「可以点连接了」 */
+  const backendLabel = $derived(
+    ui.segBackendReady && ui.segMaskSupported ? 'SAM3 已连接 · 支持像素级掩膜'
+      : ui.segBackendReady ? '后端在线，但版本太旧（无 mask 能力）'
+      : ui.samBackendState === 'ready' ? 'SAM3 模型已就绪 · 可以连接'
+      : ui.samBackendState === 'starting' ? '后端启动中…'
+      : ui.samBackendState === 'loading' ? '模型正在加载中…（首次约 10~30 秒）'
+      : 'SAM3 后端未连接'
+  );
+  const backendBusy = $derived(ui.samBackendState === 'starting' || ui.samBackendState === 'loading');
+
+  // 进入分割模式时如果后端还没就绪，补一次轮询（App 启动时已经轮询的话只是延长截止时间）
+  onMount(() => {
+    if (!ui.segBackendReady && ui.samBackendState !== 'ready') watchBackendStatus(45_000);
+  });
 
   async function startSweep() {    if (busy) return;
     busy = true;
@@ -262,14 +280,21 @@
     <!-- 后端状态 -->
     <div class="section">
       <div class="row-line">
-        <span class="dot" class:ok={ui.segBackendReady && ui.segMaskSupported} class:warn={ui.segBackendReady && !ui.segMaskSupported}></span>
-        <span class="tiny">
-          {ui.segBackendReady
-            ? (ui.segMaskSupported ? 'SAM3 后端已连接 · 支持像素级掩膜' : '后端在线，但版本太旧（无 mask 能力）')
-            : 'SAM3 后端未连接'}
-        </span>
-        <button class="btn-mini" onclick={connectBackend} disabled={busy}>{busy ? '…' : '连接'}</button>
+        <span class="dot"
+          class:ok={ui.segBackendReady && ui.segMaskSupported}
+          class:warn={ui.segBackendReady && !ui.segMaskSupported}
+          class:busy={!ui.segBackendReady && backendBusy}
+          class:err={!ui.segBackendReady && ui.samBackendState === 'error'}></span>
+        <span class="tiny">{backendLabel}</span>
+        <button class="btn-mini" onclick={connectBackend} disabled={busy || ui.segBackendReady || backendBusy}>
+          {ui.segBackendReady ? '已连接' : busy ? '…' : '连接'}
+        </button>
       </div>
+      {#if !ui.segBackendReady && ui.samBackendState === 'error'}
+        <p class="muted tiny">
+          连不上后端：检查 exe 同级的 backend.local.json，或在顶部「模型状态」里点「启动并检查」。
+        </p>
+      {/if}
       <p class="muted tiny">掩膜改动和标注一样自动保存（Ctrl+S 同款），工程文件用「保存工程」落盘。</p>
       <p class="muted tiny">编码 {embedInfo.requests} 次 · 缓存 {embedInfo.cache} 张（切回前几张图不会再重编码）</p>
     </div>
@@ -690,6 +715,9 @@
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex: none; }
   .dot.ok { background: #3fb950; }
   .dot.warn { background: #d2991d; }
+  .dot.busy { background: #d2991d; animation: seg-pulse 1.1s ease-in-out infinite; }
+  .dot.err { background: #f85149; }
+  @keyframes seg-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
 
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
   .chip {

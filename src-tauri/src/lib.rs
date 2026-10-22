@@ -6,6 +6,50 @@ use std::sync::Mutex;
 use tauri::State;
 
 static CHILD: std::sync::OnceLock<Mutex<Option<std::process::Child>>> = std::sync::OnceLock::new();
+/// 串行化 sidecar 启动：自动启动和前端「连接」同时触发时，避免 spawn 两份
+static START_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+
+/// 本机后端启动配置（`backend.local.json`，不入库；只在自己电脑上用）
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct BackendLocalConfig {
+    enabled: Option<bool>,
+    python_exe: Option<String>,
+    script: Option<String>,
+    sam3_model: Option<String>,
+    pose_model: Option<String>,
+    torch_home: Option<String>,
+    port: Option<u16>,
+}
+
+/// 依次在 exe 同级、当前目录、`src-tauri/` 找 `backend.local.json`
+fn load_backend_config() -> Option<BackendLocalConfig> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("backend.local.json"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("backend.local.json"));
+        candidates.push(cwd.join("src-tauri").join("backend.local.json"));
+    }
+    for p in candidates {
+        if !p.exists() { continue; }
+        if let Ok(raw) = fs::read_to_string(&p) {
+            // Windows 记事本/PowerShell 5.1 可能写 UTF-8 BOM；serde_json 不认，先去掉
+            let text = raw.trim_start_matches('\u{feff}');
+            match serde_json::from_str::<BackendLocalConfig>(text) {
+                Ok(cfg) => {
+                    dbg_log(&format!("backend config: {}", p.display()));
+                    return Some(cfg);
+                }
+                Err(e) => dbg_log(&format!("backend config parse error {}: {}", p.display(), e)),
+            }
+        }
+    }
+    None
+}
 
 /// Debug log to file（写系统临时目录：源码里不留任何本机绝对路径）
 fn dbg_log(msg: &str) {
@@ -277,6 +321,9 @@ async fn save_file_as(
 /// Start Python SAM sidecar and return the port
 #[tauri::command]
 async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String> {
+    // 自动启动和前端「连接」同时触发时，串行化，避免 spawn 两份
+    let _start_guard = START_LOCK.get_or_init(|| Mutex::new(())).lock().map_err(|e| e.to_string())?;
+
     // 已有进程直接返回
     {
         let port = state.port.lock().map_err(|e| e.to_string())?;
@@ -285,13 +332,19 @@ async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String
         }
     }
 
-    // 找 Python 路径
-    // 优先读环境变量 SAM_PYTHON，否则用 PATH 里的 python
-    let python_exe = std::env::var("SAM_PYTHON").unwrap_or_else(|_| "python".to_string());
-    // 脚本路径：exe 同级 sidecar/
+    let cfg = load_backend_config();
+    if cfg.as_ref().and_then(|c| c.enabled) == Some(false) {
+        return Err("backend.local.json: enabled=false".to_string());
+    }
+
+    // 找 Python / 脚本：优先本机 backend.local.json，其次环境变量/默认
     let exe_dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("no exe dir")?.to_path_buf();
-    let script = exe_dir.join("sidecar").join("sam_server.py");
-    let script = script.to_string_lossy().to_string();
+    let python_exe = cfg.as_ref().and_then(|c| c.python_exe.clone())
+        .or_else(|| std::env::var("SAM_PYTHON").ok())
+        .unwrap_or_else(|| "python".to_string());
+    let script = cfg.as_ref().and_then(|c| c.script.clone())
+        .unwrap_or_else(|| exe_dir.join("sidecar").join("sam_server.py").to_string_lossy().to_string());
+    let target_port = cfg.as_ref().and_then(|c| c.port).unwrap_or(1421);
 
     if !std::path::Path::new(&python_exe).exists() {
         return Err(format!("Python not found: {}", python_exe));
@@ -300,36 +353,58 @@ async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String
         return Err(format!("Script not found: {}", script));
     }
 
-    // 启动进程
-    let mut child = std::process::Command::new(python_exe)
-        .arg(script)
-        .env("SAM_PORT", "1421")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start sidecar: {}", e))?;
+    let mut cmd = std::process::Command::new(&python_exe);
+    cmd.arg("-u")
+        .arg(&script)
+        .env("SAM_PORT", target_port.to_string())
+        .env("SAM_PARENT_PID", std::process::id().to_string())  // 主程序被强杀时后端自动退出
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUNBUFFERED", "1")
+        .stdout(std::process::Stdio::piped());
+
+    if let Some(c) = &cfg {
+        if let Some(v) = &c.sam3_model { cmd.env("SAM3_MODEL_PATH", v); }
+        if let Some(v) = &c.pose_model { cmd.env("POSE_MODEL_PATH", v); }
+        if let Some(home) = &c.torch_home {
+            cmd.env("TORCH_HOME", home);
+            cmd.env("TORCHINDUCTOR_CACHE_DIR", format!("{}\\inductor_cache", home));
+            cmd.env("TRITON_CACHE_DIR", format!("{}\\triton_cache", home));
+        }
+    }
+
+    // stderr 写日志（不弹终端也方便排查）；stdout 先读端口，再后台排空
+    let log_path = exe_dir.join("sam_server.log");
+    match fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(f) => { cmd.stderr(std::process::Stdio::from(f)); }
+        Err(_) => { cmd.stderr(std::process::Stdio::null()); }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW：双击 exe 不弹黑色终端
+    }
+
+    if let Some(parent) = std::path::Path::new(&script).parent() {
+        cmd.current_dir(parent);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to start sidecar: {}", e))?;
 
     // 读 stdout 找端口（等 READY 输出）
     use std::io::{BufRead, BufReader};
-    let mut stdout = child.stdout.take().ok_or("No stdout")?;
-    let mut reader = BufReader::new(&mut stdout);
-
-    // 等待 "listening on http://127.0.0.1:PORT" 或 "READY"
+    let stdout = child.stdout.take().ok_or("No stdout")?;
+    let mut reader = BufReader::new(stdout);
     let mut port: Option<u16> = None;
     let mut line = String::new();
-
-    // 超时 30 秒（加载模型需要时间）
     let start = std::time::Instant::now();
     while start.elapsed().as_secs() < 30 {
         line.clear();
         let n = reader.read_line(&mut line).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
+        if n == 0 { break; }
         let trimmed = line.trim();
-        println!("[sidecar] {}", trimmed);
+        dbg_log(&format!("[sam_server] {}", trimmed));
 
-        // 解析端口
         if let Some(idx) = trimmed.find("127.0.0.1:") {
             let rest = &trimmed[idx + "127.0.0.1:".len()..];
             if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
@@ -344,15 +419,34 @@ async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String
         }
     }
 
-    let port = port.ok_or("Sidecar did not report port within 30s")?;
-
-    // 同时存全局，供 Exit 时杀（child 先 move 到全局，再存 state）
-    {
-        if let Some(g) = CHILD.get() {
-            if let Ok(mut l) = g.lock() { *l = Some(child); }
+    let port = match port {
+        Some(p) => p,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Sidecar did not report port within 30s (see {})",
+                log_path.display()
+            ));
         }
+    };
+
+    // 端口拿到后继续排空 stdout，避免管道写满把 Python 卡住
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            let t = line.trim();
+            if !t.is_empty() { dbg_log(&format!("[sam_server] {}", t)); }
+            line.clear();
+        }
+    });
+
+    // child 交给全局，Exit 时统一杀
+    if let Some(g) = CHILD.get() {
+        if let Ok(mut l) = g.lock() { *l = Some(child); }
+    }
+    {
         let mut child_lock = state.child.lock().map_err(|e| e.to_string())?;
-        // state 里存个占位（Exit 用全局杀）
         *child_lock = None;
     }
     {
@@ -366,13 +460,17 @@ async fn sam_sidecar_start(state: State<'_, SidecarState>) -> Result<u16, String
 /// Stop Python SAM sidecar
 #[tauri::command]
 async fn sam_sidecar_stop(state: State<'_, SidecarState>) -> Result<(), String> {
-    let mut child_lock = state.child.lock().map_err(|e| e.to_string())?;
-    if let Some(mut child) = child_lock.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+    // child 实际存在全局 CHILD 里（Exit 也用同一份），这里必须一起杀
+    if let Some(g) = CHILD.get() {
+        if let Ok(mut l) = g.lock() {
+            if let Some(mut c) = l.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
     }
-    let mut port_lock = state.port.lock().map_err(|e| e.to_string())?;
-    *port_lock = None;
+    if let Ok(mut child_lock) = state.child.lock() { *child_lock = None; }
+    if let Ok(mut port_lock) = state.port.lock() { *port_lock = None; }
     Ok(())
 }
 

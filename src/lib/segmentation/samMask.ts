@@ -10,6 +10,8 @@
  *    POST /predict  → return_mask=true 时多返回 mask_png（单实例二值 0/255）
  */
 import { ensureSidecar } from '../sam';
+import { ui } from '../state.svelte';
+import { inStartupGrace } from '../samBackendStatus';
 
 const DEFAULT_BASE = 'http://127.0.0.1:1421';
 
@@ -61,43 +63,65 @@ function isTauri(): boolean {
 
 /** 探测后端能力。桌面端会顺带尝试拉起 sidecar（和检测模式同一个命令）。
  *
- *  注意：`sam_sidecar_start` 找的是 **exe 同级 `sidecar/sam_server.py`**，
- *  而打包输出目录里并没有这个文件（sidecar 从未随 exe 发布）。
- *  所以这里绝不能「拉起失败就直接报错」——照文档手动起的后端还在 1421 上跑着，
- *  正确做法是忽略拉起失败，继续探测 /health。 */
+ *  本机可在 exe 同级放 `backend.local.json`，指定现有 conda 的 python.exe、脚本和模型路径；
+ *  Rust 会自动后台启动（不弹终端）。拉起失败时继续探测 /health，兼容手动启动的后端。 */
 export async function connectSegBackend(startSidecar = true): Promise<{ ready: boolean; maskSupported: boolean; boxSupported: boolean; error?: string }> {
+  let started = false;
   if (startSidecar && isTauri()) {
     try {
       const url = await ensureSidecar();
-      if (url) baseUrl = url;
+      if (url) { baseUrl = url; started = true; }
     } catch {
-      // 拉起失败（exe 同级没有 sidecar 脚本是常态）→ 退回到「直接探测已手动启动的后端」
+      // 拉起失败 → 退回到「直接探测已手动启动的后端」
     }
   }
-  try {
-    const resp = await fetch(`${baseUrl}/health`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    serverReady = data?.model_loaded === true;
-    const features: string[] = Array.isArray(data?.features) ? data.features : [];
-    maskSupported = features.includes('mask');
-    boxSupported = features.includes('box');
-    if (!serverReady) {
-      return { ready: false, maskSupported, boxSupported, error: '后端在线但模型还没加载完（冷启动 10~30 秒）' };
+
+  // 端口同步给顶栏「模型状态」面板 / 连接弹窗共用
+  const portMatch = baseUrl.match(/:(\d+)$/);
+  if (portMatch) ui.samBackendPort = Number(portMatch[1]);
+
+  // 本机自动拉起时，SAM3 还要 10~30 秒加载；这里等到 model_loaded 再返回，
+  // 避免用户双击后第一次点分割只看到「模型还没加载完」。
+  const deadline = started ? Date.now() + 45000 : Date.now();
+  let lastError = '';
+  let modelLoading = false;
+  while (true) {
+    try {
+      const resp = await fetch(`${baseUrl}/health`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const features: string[] = Array.isArray(data?.features) ? data.features : [];
+      maskSupported = features.includes('mask');
+      boxSupported = features.includes('box');
+      serverReady = data?.model_loaded === true;
+      if (serverReady) {
+        ui.samBackendState = 'ready';
+        ui.samBackendError = '';
+        return { ready: true, maskSupported, boxSupported };
+      }
+      modelLoading = true;
+      ui.samBackendState = 'loading';
+      lastError = '后端在线但模型还没加载完（冷启动 10~30 秒）';
+    } catch (e: any) {
+      serverReady = false;
+      maskSupported = false;
+      boxSupported = false;
+      modelLoading = false;
+      // 刚 spawn 的宽限期内 /health 还没监听，属于正常加载，不要显示成红色失败
+      if (ui.samBackendState !== 'starting' && !inStartupGrace()) {
+        ui.samBackendState = 'error';
+        ui.samBackendError = e?.message || String(e);
+      }
+      lastError =
+        `连不上 SAM 后端（${baseUrl}）。请检查 exe 同级的 backend.local.json 和 sam_server.log；` +
+        `也可以手动启动 src-tauri\\sidecar\\sam_server.py。（${e?.message || e}）`;
     }
-    return { ready: true, maskSupported, boxSupported };
-  } catch (e: any) {
-    serverReady = false;
-    maskSupported = false;
-    boxSupported = false;
-    return {
-      ready: false,
-      maskSupported: false,
-      boxSupported: false,
-      error:
-        `连不上 SAM 后端（${baseUrl}）。请先手动启动 Python 服务：\n` +
-        `python src-tauri\\sidecar\\sam_server.py，看到 SAM_SERVER_READY 再点「连接后端」。（${e?.message || e}）`,
-    };
+
+    if (Date.now() >= deadline || !started) {
+      if (modelLoading || inStartupGrace()) ui.samBackendState = 'loading';
+      return { ready: false, maskSupported, boxSupported, error: lastError };
+    }
+    await new Promise(r => setTimeout(r, 1000));
   }
 }
 

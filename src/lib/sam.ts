@@ -7,6 +7,7 @@
  */
 
 import { ui } from './state.svelte';
+import { markBackendSpawned } from './samBackendStatus';
 
 export interface SamPoint {
   x: number;  // 原图坐标
@@ -119,6 +120,9 @@ export async function ensureSidecar(): Promise<string> {
   const { invoke } = await import('@tauri-apps/api/core');
   const port = await invoke<number>('sam_sidecar_start');
   SAM_SERVER_URL = 'http://127.0.0.1:' + port;
+  ui.samBackendPort = port;
+  // 已就绪时不要回退成「加载中」；只有刚 spawn 的情况才进入加载宽限期
+  if (ui.samBackendState !== 'ready') markBackendSpawned(90_000);
   return SAM_SERVER_URL;
 }
 
@@ -151,21 +155,32 @@ function imageKey(img: HTMLImageElement): string {
  * 保留兼容接口，后端启动时自动加载模型
  */
 export async function loadModel(_encoderFile: File, _decoderFile: File): Promise<void> {
+  let modelNotReady = false;
   try {
     const resp = await safeFetch(`${SAM_SERVER_URL}/health`);
     const data = await resp.json();
     serverReady = data.model_loaded === true;
+    ui.samPoseLoaded = data.pose_loaded === true;
+    ui.samFaceLoaded = data.face_loaded === true;
     // 同步到 $state：组件的 `$derived(...)` 只认响应式依赖。
     // 以前界面读的是 isModelLoaded()，它读的是模块级普通变量，
     // Svelte 感知不到变化 → 连接成功了界面还是「未连接」，得关掉弹窗重开。
     ui.samModelReady = serverReady;
     if (!serverReady) {
-      throw new Error('SAM 后端服务未就绪');
+      modelNotReady = true;
+      ui.samBackendState = 'loading';
+      throw new Error('后端在线，但模型还没加载完（首次约 10~30 秒），请稍候再点连接');
     }
-  } catch (e) {
+    ui.samBackendState = 'ready';
+    ui.samBackendError = '';
+  } catch (e: any) {
     serverReady = false;
     ui.samModelReady = false;
-    throw new Error('无法连接 SAM 后端服务，请确认 Python 服务已启动');
+    if (!modelNotReady) {
+      ui.samBackendState = 'error';
+      ui.samBackendError = e?.message || String(e);
+    }
+    throw new Error(e?.message || '无法连接 SAM 后端服务，请确认 Python 服务已启动');
   }
 }
 
@@ -323,6 +338,8 @@ export async function poseDetect(
   });
   if (!resp.ok) throw new Error(`姿态检测失败: ${resp.status}`);
   const data = await resp.json();
+  ui.samPoseLoaded = true;
+  ui.samBackendState = 'ready';
   return (data.persons || []).map((p: any) => ({
     keypoints: (p.keypoints || []).map((k: number[]) => ({ x: k[0], y: k[1], conf: k[2] ?? 0 })),
     score: p.score || 0,
@@ -343,6 +360,8 @@ export async function faceDetect(
   });
   if (!resp.ok) throw new Error(`人脸检测失败: ${resp.status}`);
   const data = await resp.json();
+  ui.samFaceLoaded = true;
+  ui.samBackendState = 'ready';
   return (data.faces || []).map((f: any) => ({
     keypoints: (f.keypoints || []).map((k: number[]) => ({ x: k[0], y: k[1] })),
   }));

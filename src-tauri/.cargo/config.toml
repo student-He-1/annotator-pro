@@ -1,5 +1,0 @@
-﻿# 编译产物输出到纯英文路径。
-# 原因：本项目路径含中文，而 WebView2 在 exe 路径含中文时会崩在 msedge_elf.dll。
-# tauri dev / tauri build 的产物默认落在 src-tauri\target（含中文），故重定向到这里。
-[build]
-target-dir = "D:/anntarget"

@@ -69,6 +69,15 @@ export const ui = $state({
    *  `$derived(isModelLoaded())` 读不到变化 → 加载成功那一刻界面不刷新，
    *  非得关掉弹窗重开（重新创建组件）才看得到「已加载」。 */
   samModelReady: false,
+  /** SAM3 后端整体状态（UI 用，三种模式共用）：
+   *  idle=没启动/未知，starting=正在拉起进程，loading=后端在线但模型还在加载，
+   *  ready=模型已就绪（小绿点），error=连不上/启动失败 */
+  samBackendState: 'idle' as 'idle' | 'starting' | 'loading' | 'ready' | 'error',
+  samBackendError: '',
+  samBackendPort: 1421,
+  /** 懒加载模型是否已加载（来自 /health；首次调用成功后置 true） */
+  samPoseLoaded: false,
+  samFaceLoaded: false,
   yoloModelName: '',
   yoloClassCount: 0,
   activeClass: 'person',

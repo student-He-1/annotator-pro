@@ -11,37 +11,29 @@ dist-ssr/
 # Tauri / Rust 构建产物
 src-tauri/target/
 src-tauri/gen/schemas/
-src-tauri/Cargo.lock
 
 # 编辑器 / 系统
 .vscode/*
 !.vscode/extensions.json
 .idea/
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
 Thumbs.db
+*.suo
+*.sw?
 
 # 日志与临时文件
 *.log
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 *.tmp
 *.bak
-_check*.bin
-
-# Python 后端
-python/server.log
 
 # 本地模型 / 数据（体积大，不入库）
-*.onnx
 *.pt
+*.onnx
 *.safetensors
 models/
 datasets/
 
-python/.vscode/
+# Python
+__pycache__/
+*.pyc
