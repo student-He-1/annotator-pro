@@ -10,6 +10,8 @@
 
 桌面端是 **Tauri 2 + Svelte 5**，AI 推理走本地 Python 服务（**SAM3 / YOLO**），全程离线、不依赖任何云服务。
 
+**在线展示页**：[https://student-he-1.github.io/annotator-pro/](https://student-he-1.github.io/annotator-pro/)
+
 - 标注数据以工程文件（`.annotator`）保存，支持自动保存与撤销/重做
 - 图片 `name` 支持子目录（如 `jpg/9.jpg`），导出文件名自动只用 basename，不会凭空建目录
 - 三种模式的标注数据彼此独立，互不污染
