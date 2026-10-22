@@ -16,6 +16,39 @@
 
 ---
 
+## 界面展示
+
+<p align="center">
+  <img src="assets/icon.png" alt="Annotator Pro" width="96">
+</p>
+
+<p align="center"><strong>Annotator Pro</strong> · 本地 AI 图像标注工具</p>
+
+### 启动页
+
+选择目标检测、图像分类或图像分割后进入对应工作区。
+
+![启动页](assets/screenshot-1-home.png)
+
+### 目标检测
+
+矩形 / 多边形 / 旋转框 / 关键点标注；右侧可调批量预标注、类别与导出格式。
+
+![目标检测](assets/screenshot-2-detection.png)
+
+### 图像分类
+
+整图多标签分类，支持批量打标与分类 CSV 导出。
+
+![图像分类](assets/screenshot-3-classification.png)
+
+### 图像分割
+
+SAM3 文本提示 / 全类扫描 / 画笔橡皮 / 区域复核；右侧显示模型状态与分割类别。
+
+![图像分割](assets/screenshot-4-segmentation.png)
+
+---
 ## 三种工作模式
 
 | 模式 | 能力 | 导出 |
